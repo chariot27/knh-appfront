@@ -1,5 +1,5 @@
 // app/(tabs)/fixed/dashboard.tsx
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -12,18 +12,27 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 
 import PubsScreen from "../pubs";
+import ContatosScreen from "../contatos";
+import AddVideoScreen from "../video";
 import type { PubsScreenHandle, Decision, Pub } from "../pubs";
+import ConvitesScreen from "../convites";
+import PerfilScreen from "../perfil";
 
 const { width } = Dimensions.get("window");
 
+// THEME
+const ACCENT = "#6f63ff";      // roxo (ativo)
+const BG_CARD = "#0c0c0f";     // fundo do card da navbar
+const BG_SCREEN = "#000";      // fundo geral
+const MUTED = "#8a8a8a";       // cinza inativo
+
 // Layout constants
-const NAVBAR_HEIGHT = 64; // mantido só pra navbar
+const NAVBAR_HEIGHT = 72;
 const H_PADDING = 16;
 const BUTTON_GAP = 14;
 const BUTTON_WIDTH = (width - H_PADDING * 2 - BUTTON_GAP) / 2;
 const BUTTON_HEIGHT = Math.max(44, Math.round(BUTTON_WIDTH * 0.38));
-// agora usamos só esse valor pra colar na borda da tela
-const MATCH_PANEL_BOTTOM = 2; // 0–4px costuma ficar bom
+const MATCH_PANEL_BOTTOM = 22;
 
 type Tab = "pubs" | "contatos" | "add" | "novidades" | "perfil";
 
@@ -32,9 +41,12 @@ export default function Dashboard() {
   const pubsRef = useRef<PubsScreenHandle>(null);
   const [currentName, setCurrentName] = useState<string>("");
 
-  // animações dos botões
+  // animações dos botões de decisão
   const scaleNope = useRef(new Animated.Value(1)).current;
   const scaleLike = useRef(new Animated.Value(1)).current;
+
+  // name plate (sem animação de aparecer)
+  const nameAnim = useRef(new Animated.Value(1)).current;
 
   function animatePress(anim: Animated.Value) {
     Animated.sequence([
@@ -59,20 +71,42 @@ export default function Dashboard() {
             onActive={(pub: Pub) => setCurrentName(pub?.user?.name ?? "")}
           />
 
-          {/* Painel de decisão — encostado na borda inferior (quase na navbar) */}
+          {/* Name plate — sem animação */}
+          {currentName ? (
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                s.namePlate,
+                {
+                  bottom: MATCH_PANEL_BOTTOM + BUTTON_HEIGHT + 10,
+                  opacity: nameAnim,
+                },
+              ]}
+            >
+              <Text style={s.nameText} numberOfLines={1} ellipsizeMode="tail">
+                {currentName}
+              </Text>
+            </Animated.View>
+          ) : null}
+
+          {/* Painel de decisão */}
           <View style={s.matchPanel} pointerEvents="box-none">
-            {/* Botão NÃO */}
             <TouchableWithoutFeedback
               onPressIn={() => animatePress(scaleNope)}
               onPressOut={() => onMatch("nope")}
             >
-              <Animated.View style={[s.actionBtn, s.nope, { marginRight: BUTTON_GAP, transform: [{ scale: scaleNope }] }]}>
+              <Animated.View
+                style={[
+                  s.actionBtn,
+                  s.nope,
+                  { marginRight: BUTTON_GAP, transform: [{ scale: scaleNope }] },
+                ]}
+              >
                 <Feather name="thumbs-down" size={26} color="#fff" />
                 <Text style={s.actionLabel}>Deslike</Text>
               </Animated.View>
             </TouchableWithoutFeedback>
 
-            {/* Botão LEGAL (👍 azul) */}
             <TouchableWithoutFeedback
               onPressIn={() => animatePress(scaleLike)}
               onPressOut={() => onMatch("like")}
@@ -88,59 +122,45 @@ export default function Dashboard() {
     }
 
     if (tab === "contatos") {
-      return (
-        <View style={s.contentBox}>
-          <Text style={s.contentTxt}>Contatos com consultores 💬</Text>
-        </View>
-      );
+      return <ContatosScreen />;
     }
     if (tab === "add") {
-      return (
-        <View style={s.contentBox}>
-          <Text style={s.contentTxt}>Adicionar vídeo de pub ⬆️</Text>
-        </View>
-      );
+      return <AddVideoScreen />;
     }
     if (tab === "novidades") {
-      return (
-        <View style={s.contentBox}>
-          <Text style={s.contentTxt}>Novidades e atualizações 📰</Text>
-        </View>
-      );
+      return <ConvitesScreen />
     }
-    return (
-      <View style={s.contentBox}>
-        <Text style={s.contentTxt}>Seu perfil 👤</Text>
-      </View>
-    );
+    return <PerfilScreen />;
   }
 
   return (
     <View style={s.screen}>
       <View style={s.body}>{renderContent()}</View>
 
-      {/* Navbar fixa no rodapé */}
+      {/* Navbar fixa em estilo pill */}
       <SafeAreaView edges={["bottom"]} style={s.navbarSafe}>
-        <View style={s.navbar}>
-          <NavItem label="Pubs" icon="film" active={tab === "pubs"} onPress={() => setTab("pubs")} />
-          <NavItem label="Contatos" icon="users" active={tab === "contatos"} onPress={() => setTab("contatos")} />
-          <NavItem label="Add Pub" icon="plus-circle" active={tab === "add"} onPress={() => setTab("add")} big />
-          <NavItem label="Novidades" icon="bell" active={tab === "novidades"} onPress={() => setTab("novidades")} />
-          <NavItem label="Perfil" icon="user" active={tab === "perfil"} onPress={() => setTab("perfil")} />
+        <View style={s.homeIndicator} />
+        <View style={s.navbarShadowWrap}>
+          <View style={s.navbarCard}>
+            <NavIcon icon="film"        active={tab === "pubs"}      onPress={() => setTab("pubs")} />
+            <NavIcon icon="users"       active={tab === "contatos"}  onPress={() => setTab("contatos")} />
+            <NavIcon icon="plus-circle" active={tab === "add"}       onPress={() => setTab("add")} big />
+            <NavIcon icon="bell"        active={tab === "novidades"} onPress={() => setTab("novidades")} />
+            <NavIcon icon="user"        active={tab === "perfil"}    onPress={() => setTab("perfil")} />
+          </View>
         </View>
       </SafeAreaView>
     </View>
   );
 }
 
-function NavItem({
-  label,
+/** Ícone puro (sem label e sem animação de aparecer); só troca cor quando ativo */
+function NavIcon({
   icon,
   active,
   onPress,
   big = false,
 }: {
-  label: string;
   icon: keyof typeof Feather.glyphMap;
   active: boolean;
   onPress: () => void;
@@ -149,18 +169,19 @@ function NavItem({
   return (
     <TouchableWithoutFeedback onPress={onPress}>
       <View style={s.navItem}>
-        <Feather name={icon} size={big ? 28 : 22} color={active ? "#00f2ea" : "#888"} />
-        <Text style={[s.navLabel, { color: active ? "#00f2ea" : "#888" }]}>{label}</Text>
+        <View style={[s.iconWrap, big && s.iconWrapBig]}>
+          <Feather name={icon} size={big ? 26 : 22} color={active ? ACCENT : MUTED} />
+        </View>
       </View>
     </TouchableWithoutFeedback>
   );
 }
 
 const s = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#000" },
+  screen: { flex: 1, backgroundColor: BG_SCREEN },
   body: { flex: 1 },
 
-  contentFull: { flex: 1, backgroundColor: "#000" },
+  contentFull: { flex: 1, backgroundColor: BG_SCREEN },
 
   contentBox: {
     flex: 1,
@@ -175,12 +196,32 @@ const s = StyleSheet.create({
   },
   contentTxt: { color: "#fff", fontSize: 16 },
 
-  // Painel de decisão — ABSOLUTE encostado na borda inferior
+  // Name plate
+  namePlate: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 21,
+  },
+  nameText: {
+    color: "#ddd",
+    fontSize: 13,
+    fontWeight: "600",
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+
+  // Painel de decisão
   matchPanel: {
     position: "absolute",
     left: H_PADDING,
     right: H_PADDING,
-    bottom: MATCH_PANEL_BOTTOM, // <<< ajuste principal (sem NAVBAR_HEIGHT)
+    bottom: MATCH_PANEL_BOTTOM,
     flexDirection: "row",
     justifyContent: "space-between",
     zIndex: 20,
@@ -201,20 +242,50 @@ const s = StyleSheet.create({
   },
   actionLabel: { color: "#fff", fontSize: 15, fontWeight: "700" },
   nope: { backgroundColor: "#ff4d4f" },
-  like: { backgroundColor: "#2196f3" }, // azul
+  like: { backgroundColor: "#2196f3" },
 
-  // Navbar
-  navbarSafe: { backgroundColor: "#000" },
-  navbar: {
+  // Navbar (pill)
+  navbarSafe: { backgroundColor: "transparent" },
+  homeIndicator: {
+    alignSelf: "center",
+    width: 90,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#2a2a2a",
+    marginBottom: 8,
+  },
+  navbarShadowWrap: { paddingHorizontal: 16, paddingBottom: 8 },
+  navbarCard: {
+    height: NAVBAR_HEIGHT,
+    backgroundColor: BG_CARD,
+    borderRadius: 28,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-around",
-    height: NAVBAR_HEIGHT,
-    borderTopWidth: 1,
-    borderTopColor: "#111",
-    paddingBottom: 6,
-    paddingTop: 6,
+    borderWidth: 1,
+    borderColor: "#141418",
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 18,
   },
-  navItem: { alignItems: "center", justifyContent: "center", minWidth: 60 },
-  navLabel: { fontSize: 11, fontWeight: "600", marginTop: 2 },
+
+  navItem: {
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 64,
+  },
+  iconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  iconWrapBig: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+  },
 });

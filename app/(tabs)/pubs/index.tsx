@@ -6,6 +6,7 @@ import React, {
   useRef,
   useState,
   forwardRef,
+  useMemo,
 } from "react";
 import {
   View,
@@ -16,7 +17,8 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
-import { Video, ResizeMode } from "expo-av";
+import { Video, ResizeMode, Audio } from "expo-av";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const { height, width } = Dimensions.get("window");
 
@@ -39,6 +41,9 @@ export type Props = {
   onDecision?: (pub: Pub, decision: Decision) => void;
   onActive?: (pub: Pub) => void;
 };
+
+// ===== STORAGE KEY =====
+const KEY_USER_PUBS = "USER_PUBS";
 
 // ===== MOCK API =====
 async function fetchPubs(cursor?: string | null): Promise<Page> {
@@ -64,8 +69,10 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
   { onDecision, onActive },
   ref
 ) {
-  const [data, setData] = useState<Pub[]>([]);
+  const [userPubs, setUserPubs] = useState<Pub[]>([]);
+  const [remote, setRemote] = useState<Pub[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
+
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [viewIndex, setViewIndex] = useState(0);
@@ -73,35 +80,65 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
   const isFocused = useIsFocused();
   const listRef = useRef<FlatList<Pub>>(null);
 
+  const data = useMemo(() => [...userPubs, ...remote], [userPubs, remote]);
+
+  // 🔊 Configura o áudio pro Android (duck/sem conflitar)
   useEffect(() => {
     (async () => {
-      const page = await fetchPubs(null);
-      setData(page.items);
-      setCursor(page.nextCursor ?? null);
-      if (page.items[0]) onActive?.(page.items[0]);
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+      });
     })();
-  }, [onActive]);
+  }, []);
+
+  // -------- helpers --------
+  const loadUserPubs = useCallback(async () => {
+    const raw = await AsyncStorage.getItem(KEY_USER_PUBS);
+    const arr = raw ? (JSON.parse(raw) as any[]) : [];
+    const mapped: Pub[] = arr.map((m) => ({
+      id: `local-${m.id}`,
+      videoUrl: m.videoUrl,
+      caption: m.caption,
+      user: m.user ?? { name: "Você" },
+    }));
+    setUserPubs(mapped);
+    return mapped;
+  }, []);
+
+  const loadFirstPage = useCallback(async () => {
+    const [locals, page] = await Promise.all([loadUserPubs(), fetchPubs(null)]);
+    setRemote(page.items);
+    setCursor(page.nextCursor ?? null);
+    const first = (locals[0] ?? page.items[0]) as Pub | undefined;
+    if (first) onActive?.(first);
+    setViewIndex(0);
+    listRef.current?.scrollToIndex({ index: 0, animated: false });
+  }, [loadUserPubs, onActive]);
+
+  // recarrega ao focar (pegar vídeos recém publicados)
+  useEffect(() => {
+    if (isFocused) {
+      loadFirstPage();
+    }
+  }, [isFocused, loadFirstPage]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const page = await fetchPubs(null);
-      setData(page.items);
-      setCursor(page.nextCursor ?? null);
-      setViewIndex(0);
-      listRef.current?.scrollToIndex({ index: 0, animated: false });
-      if (page.items[0]) onActive?.(page.items[0]);
+      await loadFirstPage();
     } finally {
       setRefreshing(false);
     }
-  }, [onActive]);
+  }, [loadFirstPage]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !cursor) return;
     setLoadingMore(true);
     try {
       const page = await fetchPubs(cursor);
-      setData((prev) => [...prev, ...page.items]);
+      setRemote((prev) => [...prev, ...page.items]);
       setCursor(page.nextCursor ?? null);
     } finally {
       setLoadingMore(false);
@@ -149,7 +186,9 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
           useNativeControls={false}
           shouldPlay={isFocused && isActive}
           isLooping
-          isMuted
+          // 🔊 som só no ativo
+          isMuted={!isActive ? true : false}
+          volume={isActive ? 1.0 : 0.0}
           onError={(e) => console.log("Erro no vídeo:", e)}
         />
       </View>
@@ -194,7 +233,6 @@ const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000" },
   item: { width, height, backgroundColor: "#000" },
   video: { width: "100%", height: "100%" },
-
   loadingMore: {
     position: "absolute",
     bottom: 80,
