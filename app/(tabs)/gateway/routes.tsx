@@ -1,15 +1,15 @@
+// gateway/routes.ts
 export const BASE_URL = "https://gateway-service-civz.onrender.com" as const;
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
-export type RouteEntry = {
-  path: string;
-  method: HttpMethod;
-};
+export type RouteEntry = { path: string; method: HttpMethod };
 
 export const routes = {
   users: {
     register: { path: "/api/users/register", method: "POST" } as RouteEntry,
+    login:    { path: "/api/users/login",    method: "POST" } as RouteEntry,
+    getById:  { path: "/api/users/:id",      method: "GET"  } as RouteEntry, // ✅
   },
 } as const;
 

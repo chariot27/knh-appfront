@@ -1,24 +1,12 @@
+// app/(tabs)/fixed/login.tsx
 import { useState } from "react";
 import {
-  View,
-  TextInput,
-  Alert,
-  StyleSheet,
-  TouchableOpacity,
-  Text,
-  Image,
-  BackHandler,
-  Platform,
+  View, TextInput, Alert, StyleSheet, TouchableOpacity, Text, Image, BackHandler, Platform,
 } from "react-native";
 import { router } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
-import { Feather } from "@expo/vector-icons"; // para o ícone X
-
-async function signIn({ email, senha }: { email: string; senha: string }) {
-  await new Promise((r) => setTimeout(r, 500));
-  if (!email || !senha) throw new Error("Email e senha são obrigatórios");
-  return { token: "fake-token" };
-}
+import { Feather } from "@expo/vector-icons";
+import { loginUser, getCurrentUser } from "../gateway/api";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -28,7 +16,13 @@ export default function Login() {
   async function onSubmit() {
     try {
       setLoading(true);
-      await signIn({ email: email.trim(), senha: senha.trim() });
+      const { token } = await loginUser({ email: email.trim(), password: senha.trim() });
+      console.log("🔑 token:", token);
+
+      // opcional: conferir se já temos o usuário em cache
+      const me = getCurrentUser();
+      console.log("👤 user:", me?.nome);
+
       router.replace("/(tabs)/fixed/dashboard");
     } catch (e: any) {
       Alert.alert("Falha no login", e?.message ?? "Tente novamente");
@@ -38,80 +32,40 @@ export default function Login() {
   }
 
   function exitApp() {
-    if (Platform.OS === "android") {
-      BackHandler.exitApp();
-    } else {
-      Alert.alert("Sair", "Fechar o app no iOS não é permitido.");
-    }
+    if (Platform.OS === "android") BackHandler.exitApp();
+    else Alert.alert("Sair", "Fechar o app no iOS não é permitido.");
   }
 
   return (
     <View style={[styles.container, { backgroundColor: "#000" }]}>
-      {/* Botão X no topo direito */}
       <TouchableOpacity style={styles.topBar} onPress={exitApp}>
         <Feather name="x" size={28} color="#fff" />
       </TouchableOpacity>
 
-      {/* Logo */}
-      <Image
-        source={require("../../../assets/images/logo.png")}
-        style={styles.logo}
-        resizeMode="contain"
-      />
+      <Image source={require("../../../assets/images/logo.png")} style={styles.logo} resizeMode="contain" />
 
-      {/* Campos */}
       <TextInput
-        placeholder="Email"
-        placeholderTextColor="#777"
-        autoCapitalize="none"
-        autoComplete="email"
-        keyboardType="email-address"
-        selectionColor="#ff0050"
-        value={email}
-        onChangeText={setEmail}
+        placeholder="Email" placeholderTextColor="#777" autoCapitalize="none" autoComplete="email"
+        keyboardType="email-address" selectionColor="#ff0050"
+        value={email} onChangeText={setEmail}
         style={[styles.input, { backgroundColor: "#fff", borderColor: "#ccc", color: "#000" }]}
       />
 
       <TextInput
-        placeholder="Password"
-        placeholderTextColor="#777"
-        secureTextEntry
-        autoComplete="password"
+        placeholder="Senha" placeholderTextColor="#777" secureTextEntry autoComplete="password"
         selectionColor="#ff0050"
-        value={senha}
-        onChangeText={setSenha}
+        value={senha} onChangeText={setSenha}
         style={[styles.input, { backgroundColor: "#fff", borderColor: "#ccc", color: "#000" }]}
       />
 
-      {/* Botão Entrar */}
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={onSubmit}
-        disabled={loading}
-        style={styles.buttonWrapper}
-      >
-        <LinearGradient
-          colors={["#ff0050", "#00f2ea"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.button}
-        >
+      <TouchableOpacity activeOpacity={0.85} onPress={onSubmit} disabled={loading} style={styles.buttonWrapper}>
+        <LinearGradient colors={["#ff0050", "#00f2ea"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.button}>
           <Text style={styles.buttonText}>{loading ? "Entrando..." : "Entrar"}</Text>
         </LinearGradient>
       </TouchableOpacity>
 
-      {/* Botão Cadastro */}
-      <TouchableOpacity
-        activeOpacity={0.85}
-        onPress={() => router.push("/(tabs)/fixed/RegisterScreen")} // <- rota correta
-        style={styles.buttonWrapper}
-      >
-        <LinearGradient
-          colors={["#00f2ea", "#ff0050"]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.button}
-        >
+      <TouchableOpacity activeOpacity={0.85} onPress={() => router.push("/(tabs)/fixed/RegisterScreen")} style={styles.buttonWrapper}>
+        <LinearGradient colors={["#00f2ea", "#ff0050"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.button}>
           <Text style={styles.buttonText}>Cadastrar</Text>
         </LinearGradient>
       </TouchableOpacity>
@@ -120,47 +74,11 @@ export default function Login() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 16,
-    gap: 14,
-  },
-  topBar: {
-    position: "absolute",
-    top: 40,
-    right: 20,
-    padding: 8,
-  },
-  logo: {
-    width: 120,
-    height: 120,
-    marginBottom: 20,
-  },
-  input: {
-    width: "80%",
-    height: 48,
-    borderRadius: 28,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    fontSize: 16,
-  },
-  buttonWrapper: {
-    width: "80%",
-    height: 48,
-    borderRadius: 28,
-    overflow: "hidden",
-  },
-  button: {
-    flex: 1,
-    borderRadius: 28,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  buttonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "700",
-  },
+  container: { flex: 1, justifyContent: "center", alignItems: "center", padding: 16, gap: 14 },
+  topBar: { position: "absolute", top: 40, right: 20, padding: 8 },
+  logo: { width: 120, height: 120, marginBottom: 20 },
+  input: { width: "80%", height: 48, borderRadius: 28, paddingHorizontal: 16, borderWidth: 1, fontSize: 16 },
+  buttonWrapper: { width: "80%", height: 48, borderRadius: 28, overflow: "hidden" },
+  button: { flex: 1, borderRadius: 28, alignItems: "center", justifyContent: "center" },
+  buttonText: { color: "#fff", fontSize: 16, fontWeight: "700" },
 });
