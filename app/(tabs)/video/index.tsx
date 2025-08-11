@@ -1,5 +1,4 @@
 // app/(tabs)/video/index.tsx
-// Requer: expo-image-picker e @react-native-async-storage/async-storage
 import React, { useCallback, useEffect, useState } from "react";
 import {
   View,
@@ -12,19 +11,11 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import { Video, ResizeMode, Audio } from "expo-av";
 
-const KEY = "USER_PUBS"; // onde salvamos os vídeos do usuário
-
-type UserPub = {
-  id: string;
-  videoUrl: string; // uri local
-  caption?: string;
-  user?: { name: string };
-  createdAt: number;
-};
+// ⛓️ Helpers da API (ajuste o caminho conforme sua estrutura)
+import { uploadVideo } from "../gateway/api"; // <- ajuste o path
 
 export default function AddVideoScreen() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -33,29 +24,22 @@ export default function AddVideoScreen() {
   const [uri, setUri] = useState<string | null>(null);
   const [caption, setCaption] = useState("");
 
-  // permissões + modo de áudio (Android)
+  // permissões + áudio
   useEffect(() => {
     (async () => {
       const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
       setHasPermission(lib.status === "granted");
-
-      // 🔊 Configura o áudio para Android
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
         staysActiveInBackground: false,
         shouldDuckAndroid: true,
-        
-        // playsInSilentModeIOS é irrelevante pro Android, mas não faz mal deixar default
       });
     })();
   }, []);
 
   const pickVideo = useCallback(async () => {
     if (hasPermission === false) {
-      Alert.alert(
-        "Permissão necessária",
-        "Autorize o acesso à galeria para escolher vídeos."
-      );
+      Alert.alert("Permissão necessária", "Autorize o acesso à galeria para escolher vídeos.");
       return;
     }
     try {
@@ -68,7 +52,7 @@ export default function AddVideoScreen() {
       if (!res.canceled && res.assets && res.assets[0]?.uri) {
         setUri(res.assets[0].uri);
       }
-    } catch (e) {
+    } catch {
       Alert.alert("Erro", "Não foi possível selecionar o vídeo.");
     } finally {
       setPicking(false);
@@ -84,25 +68,17 @@ export default function AddVideoScreen() {
     if (!uri) return;
     try {
       setPublishing(true);
-      const raw = await AsyncStorage.getItem(KEY);
-      const list: UserPub[] = raw ? JSON.parse(raw) : [];
-
-      const item: UserPub = {
-        id: String(Date.now()),
-        videoUrl: uri,
-        caption: caption?.trim() || undefined,
-        user: { name: "Você" },
-        createdAt: Date.now(),
-      };
-
-      // salva no começo da lista
-      const next = [item, ...list];
-      await AsyncStorage.setItem(KEY, JSON.stringify(next));
-
+      await uploadVideo({
+        descricao: caption?.trim() || "Vídeo",
+        file: { uri, name: "upload.mp4", type: "video/mp4" },
+      });
       clearSelection();
-      Alert.alert("Publicado!", "Seu vídeo foi adicionado ao feed.");
-    } catch (e) {
-      Alert.alert("Erro", "Não foi possível publicar o vídeo.");
+      Alert.alert(
+        "Publicado!",
+        "Seu vídeo foi enviado. Ele aparecerá no feed assim que o processamento HLS terminar."
+      );
+    } catch (e: any) {
+      Alert.alert("Erro", e?.message || "Não foi possível publicar o vídeo.");
     } finally {
       setPublishing(false);
     }
@@ -123,7 +99,7 @@ export default function AddVideoScreen() {
         )}
       </View>
 
-      {/* Área de seleção / preview */}
+      {/* Seleção / preview local */}
       {!uri ? (
         <TouchableOpacity
           style={s.pickBox}
@@ -149,14 +125,14 @@ export default function AddVideoScreen() {
             resizeMode={ResizeMode.CONTAIN}
             useNativeControls
             isLooping
-            isMuted={false}   // 🔊 garante som
-            volume={1.0}      // 🔊 volume máximo do player
+            isMuted={false}
+            volume={1.0}
             onError={(e) => console.log("Erro no preview:", e)}
           />
         </View>
       )}
 
-      {/* Legenda opcional */}
+      {/* Legenda = descricao */}
       <View style={s.captionWrap}>
         <Text style={s.label}>Legenda (opcional)</Text>
         <TextInput
@@ -191,7 +167,7 @@ export default function AddVideoScreen() {
       <View style={s.footerHint}>
         <Feather name="info" size={14} color="#777" />
         <Text style={s.footerText}>
-          Os vídeos publicados aparecem no feed da aba Pubs.
+          Os vídeos publicados aparecem no feed da aba Pubs quando o HLS estiver pronto.
         </Text>
       </View>
     </SafeAreaView>
@@ -234,11 +210,7 @@ const s = StyleSheet.create({
     backgroundColor: "#0c0c0c",
     overflow: "hidden",
   },
-  preview: {
-    width: "100%",
-    height: 260,
-    backgroundColor: "#000",
-  },
+  preview: { width: "100%", height: 260, backgroundColor: "#000" },
 
   captionWrap: { marginTop: 16, gap: 6 },
   label: { color: "#bdbdbd", fontSize: 12, fontWeight: "700" },
@@ -253,11 +225,7 @@ const s = StyleSheet.create({
     fontSize: 14,
   },
 
-  actions: {
-    flexDirection: "row",
-    gap: 12,
-    marginTop: 16,
-  },
+  actions: { flexDirection: "row", gap: 12, marginTop: 16 },
   btn: {
     flex: 1,
     height: 46,
@@ -267,11 +235,7 @@ const s = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
-  btnPrimary: {
-    backgroundColor: "#7B61FF",
-    borderWidth: 1,
-    borderColor: "#7B61FF",
-  },
+  btnPrimary: { backgroundColor: "#7B61FF", borderWidth: 1, borderColor: "#7B61FF" },
   btnPrimaryText: { color: "#fff", fontSize: 14, fontWeight: "800" },
   btnDisabled: { opacity: 0.4 },
 

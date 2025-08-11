@@ -1,4 +1,7 @@
-/* ========== Rotas e helpers ========== */
+// src/lib/api.ts
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+/* ========== Base/rotas/helpers ========== */
 export const BASE_URL = "https://gateway-service-civz.onrender.com" as const;
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -9,8 +12,13 @@ export const routes = {
     register:  { path: "/api/users/register",  method: "POST" } as RouteEntry,
     login:     { path: "/api/users/login",     method: "POST" } as RouteEntry,
     getById:   { path: "/api/users/:id",       method: "GET"  } as RouteEntry,
-    getPerfil: { path: "/api/users/perfil",    method: "GET"  } as RouteEntry, // 👈 novo
+    getPerfil: { path: "/api/users/perfil",    method: "GET"  } as RouteEntry,
   },
+  videos: {
+    upload: { path: "/api/videos/upload",       method: "POST" } as RouteEntry,
+    list:   { path: "/api/videos",              method: "GET"  } as RouteEntry,
+    status: { path: "/api/videos/:id/status",   method: "GET"  } as RouteEntry,
+  }
 } as const;
 
 export function buildUrl(
@@ -39,13 +47,9 @@ export function getRouteMethod(entry: RouteEntry | string): HttpMethod {
   return typeof entry === "string" ? "GET" : entry.method;
 }
 
-/* ========== Auth token & user cache ==========: */
+/* ========== Auth token & user cache ========== */
 let _authToken: string | null = null;
 
-/**
- * Cache do usuário atual.
- * Armazenamos o objeto de perfil obtido do endpoint /perfil.
- */
 export type PerfilResponse = {
   nome: string;
   email: string;
@@ -53,7 +57,7 @@ export type PerfilResponse = {
   tipo: "CONSULTOR" | "PROFISSIONAL";
   bio?: string | null;
   tags?: string[] | null;
-  avatarUrl?: string | null; // URL final no CDN (.webp)
+  avatarUrl?: string | null;
   data_criacao?: string | null;
 };
 
@@ -69,18 +73,15 @@ export type User = {
   data_criacao?: string | null;
 };
 
-/** Mantemos um "perfil atual" genérico para preencher a UI. */
 let _currentUser: (PerfilResponse | User) | null = null;
 
-/** Cache simples por e-mail com TTL para evitar chamadas repetidas ao /perfil */
 type PerfilCacheEntry = { data: PerfilResponse; ts: number };
 const _perfilCache = new Map<string, PerfilCacheEntry>();
-const PERFIL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+const PERFIL_CACHE_TTL_MS = 5 * 60 * 1000;
 
 export function setAuthToken(token: string | null) { _authToken = token; }
 export function getAuthToken() { return _authToken; }
 export function clearAuthToken() { _authToken = null; _currentUser = null; _perfilCache.clear(); }
-
 export function setCurrentUser(u: (PerfilResponse | User) | null) { _currentUser = u; }
 export function getCurrentUser() { return _currentUser; }
 
@@ -111,7 +112,7 @@ type RequestOpts = {
   auth?: boolean;
 };
 
-/* ========== Utils ==========: */
+/* ========== Utils HTTP ========== */
 async function fetchWithTimeout(
   input: RequestInfo | URL,
   init?: RequestInit & { timeoutMs?: number }
@@ -119,7 +120,10 @@ async function fetchWithTimeout(
   const { timeoutMs = 20000, ...rest } = init || {};
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
-  try { return await fetch(input, { ...rest, signal: controller.signal }); }
+  try { 
+    const headers = { Accept: "application/json", ...(rest.headers || {}) };
+    return await fetch(input, { ...rest, headers, signal: controller.signal });
+  }
   finally { clearTimeout(id); }
 }
 
@@ -127,7 +131,7 @@ function b64urlToString(b64url: string) {
   const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/")
     + "=".repeat((4 - (b64url.length % 4)) % 4);
   if (typeof atob === "function") return decodeURIComponent(escape(atob(b64)));
-  // @ts-ignore - RN fallback
+  // @ts-ignore
   const buf = typeof Buffer !== "undefined" ? Buffer.from(b64, "base64") : null;
   return buf ? buf.toString("utf8") : "";
 }
@@ -148,7 +152,7 @@ async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes>
   let lastErr: any = null;
   for (let attempt = 1; attempt <= attemptMax; attempt++) {
     try {
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { Accept: "application/json" };
       if (opts.auth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
       const res = await fetchWithTimeout(url, { method: "GET", headers, timeoutMs: opts.timeoutMs ?? 20000 });
       const text = await res.text().catch(() => "");
@@ -169,8 +173,10 @@ async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes>
 
 /* ====== Multipart helper ====== */
 async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpts = {}): Promise<TRes> {
-  const headers: Record<string, string> = {};
+  // IMPORTANTE: não setar Content-Type manualmente (RN define boundary)
+  const headers: Record<string, string> = { Accept: "application/json" };
   if (opts.auth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
+
   const res = await fetchWithTimeout(url, { method: "POST", headers, body: form, timeoutMs: opts.timeoutMs ?? 25000 });
   const text = await res.text().catch(() => "");
   const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
@@ -181,13 +187,11 @@ async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpt
   return parsed as TRes;
 }
 
-/* ========== Endpoints ========== */
+/* ========== Endpoints de Users ========== */
 export async function registerUser(payload: RegisterPayload, file?: UploadFile) {
   const url = buildUrl(routes.users.register);
-
   const form = new FormData();
   form.append("data", JSON.stringify(payload) as any);
-
   if (file?.uri) {
     form.append("avatar", {
       uri: file.uri,
@@ -195,13 +199,12 @@ export async function registerUser(payload: RegisterPayload, file?: UploadFile) 
       type: file.type || "application/octet-stream",
     } as any);
   }
-
   return postMultipart<any>(url, form, { timeoutMs: 25000, retries: 2 });
 }
 
 export async function loginUser(payload: LoginPayload): Promise<LoginResponse> {
   const url = buildUrl(routes.users.login);
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
   const res = await fetchWithTimeout(url, { method: "POST", headers, body: JSON.stringify(payload), timeoutMs: 20000 });
   const text = await res.text().catch(() => "");
   const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
@@ -209,7 +212,6 @@ export async function loginUser(payload: LoginPayload): Promise<LoginResponse> {
   const token = typeof parsed === "string" ? parsed : parsed?.token;
   if (!token) throw new Error("Resposta de login inválida");
   setAuthToken(token);
-  // não iniciei _currentUser aqui; deixo o /perfil popular de forma confiável
   return { token };
 }
 
@@ -218,7 +220,6 @@ export async function getUserById(id: string) {
   return getJson<User>(url, { auth: true, timeoutMs: 15000, retries: 1 });
 }
 
-/** Busca perfil por e-mail com cache por 5 minutos. Também preenche _currentUser. */
 export async function getPerfilByEmail(email: string): Promise<PerfilResponse> {
   const key = email.trim().toLowerCase();
   const now = Date.now();
@@ -227,20 +228,88 @@ export async function getPerfilByEmail(email: string): Promise<PerfilResponse> {
     setCurrentUser(cached.data);
     return cached.data;
   }
-
   const url = buildUrl(routes.users.getPerfil, undefined, { email: key });
   const perfil = await getJson<PerfilResponse>(url, { auth: true, timeoutMs: 15000, retries: 1 });
-
   _perfilCache.set(key, { data: perfil, ts: now });
   setCurrentUser(perfil);
   return perfil;
 }
 
-/** Decodifica o JWT, extrai o userId e popula o cache _currentUser (fallback via /:id). */
 export async function initCurrentUserFromToken(): Promise<User | null> {
   const id = getUserIdFromToken();
   if (!id) return null;
   const user = await getUserById(id);
   setCurrentUser(user);
   return user;
+}
+
+/* ========== Vídeos (upload + feed READY) ========== */
+export type VideoStatus = "UPLOADED" | "PROCESSING" | "READY" | "FAILED";
+export type VideoDTO = {
+  id: string;
+  userId: string;
+  descricao?: string | null;
+  hlsMasterUrl: string | null;   // CDN HLS .m3u8
+  streamVideoId?: string | null;
+  status: VideoStatus;
+  dataUpload?: string | null;
+};
+
+export type UploadVideoInput = { descricao: string; file: UploadFile };
+
+function guessMime(uri?: string) {
+  if (!uri) return "application/octet-stream";
+  const u = uri.toLowerCase();
+  if (u.endsWith(".mp4")) return "video/mp4";
+  if (u.endsWith(".mov")) return "video/quicktime";
+  if (u.endsWith(".mkv")) return "video/x-matroska";
+  return "video/mp4";
+}
+
+const UPLOAD_TIMEOUT_MS = 5 * 60_000; // 5 min pra uploads mais parrudos
+
+export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
+  const userId = getUserIdFromToken();
+  if (!userId) throw new Error("Faça login para publicar.");
+
+  const url = buildUrl(routes.videos.upload);
+  const form = new FormData();
+  form.append("data", JSON.stringify({ userId, descricao: input.descricao }) as any);
+  form.append("file", {
+    uri: input.file.uri,
+    name: input.file.name || "video.mp4",
+    type: input.file.type || guessMime(input.file.uri),
+  } as any);
+
+  try {
+    return await postMultipart<VideoDTO>(url, form, { auth: true, timeoutMs: UPLOAD_TIMEOUT_MS, retries: 0 });
+  } catch (e: any) {
+    const msg = (e?.message || "").toLowerCase();
+    if (msg.includes("network request failed") || msg.includes("abort") || msg.includes("networkerror")) {
+      throw new Error("Falha de rede/timeout durante upload. Tente novamente em uma conexão estável.");
+    }
+    throw e;
+  }
+}
+
+const FEED_CACHE_KEY = "FEED_CACHE_V1";
+const FEED_TTL_MS = 15_000;
+
+export async function fetchFeedReady(): Promise<VideoDTO[]> {
+  const url = buildUrl(routes.videos.list);
+  try {
+    const list = await getJson<VideoDTO[]>(url, { auth: true, timeoutMs: 15_000, retries: 1 });
+    const ready = (list || []).filter(v => v.status === "READY" && !!v.hlsMasterUrl);
+    try { await AsyncStorage.setItem(FEED_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: ready })); } catch {}
+    return ready;
+  } catch (err) {
+    const raw = await AsyncStorage.getItem(FEED_CACHE_KEY);
+    if (raw) {
+      try {
+        const { ts, data } = JSON.parse(raw);
+        if (Date.now() - ts < FEED_TTL_MS) return data as VideoDTO[];
+      } catch {}
+    }
+    throw err;
+  }
 }

@@ -6,7 +6,6 @@ import React, {
   useRef,
   useState,
   forwardRef,
-  useMemo,
 } from "react";
 import {
   View,
@@ -18,18 +17,11 @@ import {
 } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 import { Video, ResizeMode, Audio } from "expo-av";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+
+// ⛓️ API
+import { fetchFeedReady, VideoDTO } from "../gateway/api"; // <- ajuste o path
 
 const { height, width } = Dimensions.get("window");
-
-export type Pub = {
-  id: string;
-  videoUrl: string;
-  caption?: string;
-  user?: { name: string };
-};
-
-type Page = { items: Pub[]; nextCursor?: string | null };
 
 export type Decision = "like" | "nope";
 
@@ -38,51 +30,23 @@ export type PubsScreenHandle = {
 };
 
 export type Props = {
-  onDecision?: (pub: Pub, decision: Decision) => void;
-  onActive?: (pub: Pub) => void;
+  onDecision?: (pub: VideoDTO, decision: Decision) => void;
+  onActive?: (pub: VideoDTO) => void;
 };
-
-// ===== STORAGE KEY =====
-const KEY_USER_PUBS = "USER_PUBS";
-
-// ===== MOCK API =====
-async function fetchPubs(cursor?: string | null): Promise<Page> {
-  await new Promise((r) => setTimeout(r, 500));
-  const sources = [
-    "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-    "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
-  ];
-  const base = Array.from({ length: 5 }).map((_, i) => {
-    const n = Math.floor(Math.random() * 100000);
-    return {
-      id: `${cursor || "0"}-${i}-${n}`,
-      videoUrl: sources[i % sources.length],
-      caption: i % 2 === 0 ? "Big Buck Bunny" : "Elephants Dream",
-      user: { name: i % 2 === 0 ? "Alice" : "Bob" },
-    } as Pub;
-  });
-  return { items: base, nextCursor: cursor ? String(Number(cursor) + 1) : "1" };
-}
-// ====================
 
 const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
   { onDecision, onActive },
   ref
 ) {
-  const [userPubs, setUserPubs] = useState<Pub[]>([]);
-  const [remote, setRemote] = useState<Pub[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [items, setItems] = useState<VideoDTO[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false); // reservado se paginar depois
   const [viewIndex, setViewIndex] = useState(0);
 
   const isFocused = useIsFocused();
-  const listRef = useRef<FlatList<Pub>>(null);
+  const listRef = useRef<FlatList<VideoDTO>>(null);
 
-  const data = useMemo(() => [...userPubs, ...remote], [userPubs, remote]);
-
-  // 🔊 Configura o áudio pro Android (duck/sem conflitar)
+  // 🔊 áudio Android
   useEffect(() => {
     (async () => {
       await Audio.setAudioModeAsync({
@@ -93,34 +57,18 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
     })();
   }, []);
 
-  // -------- helpers --------
-  const loadUserPubs = useCallback(async () => {
-    const raw = await AsyncStorage.getItem(KEY_USER_PUBS);
-    const arr = raw ? (JSON.parse(raw) as any[]) : [];
-    const mapped: Pub[] = arr.map((m) => ({
-      id: `local-${m.id}`,
-      videoUrl: m.videoUrl,
-      caption: m.caption,
-      user: m.user ?? { name: "Você" },
-    }));
-    setUserPubs(mapped);
-    return mapped;
-  }, []);
-
   const loadFirstPage = useCallback(async () => {
-    const [locals, page] = await Promise.all([loadUserPubs(), fetchPubs(null)]);
-    setRemote(page.items);
-    setCursor(page.nextCursor ?? null);
-    const first = (locals[0] ?? page.items[0]) as Pub | undefined;
-    if (first) onActive?.(first);
+    const data = await fetchFeedReady(); // já filtra READY + cache leve
+    setItems(data);
+    if (data[0]) onActive?.(data[0]);
     setViewIndex(0);
     listRef.current?.scrollToIndex({ index: 0, animated: false });
-  }, [loadUserPubs, onActive]);
+  }, [onActive]);
 
-  // recarrega ao focar (pegar vídeos recém publicados)
+  // recarrega ao focar
   useEffect(() => {
     if (isFocused) {
-      loadFirstPage();
+      loadFirstPage().catch(() => {});
     }
   }, [isFocused, loadFirstPage]);
 
@@ -133,24 +81,18 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
     }
   }, [loadFirstPage]);
 
+  // placeholder se/quando houver backend paginado
   const loadMore = useCallback(async () => {
-    if (loadingMore || !cursor) return;
-    setLoadingMore(true);
-    try {
-      const page = await fetchPubs(cursor);
-      setRemote((prev) => [...prev, ...page.items]);
-      setCursor(page.nextCursor ?? null);
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [cursor, loadingMore]);
+    if (loadingMore) return;
+    // se seu backend tiver paginação, plugue aqui
+  }, [loadingMore]);
 
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: Array<{ index: number | null }> }) => {
       if (viewableItems.length === 0) return;
       const idx = viewableItems[0].index ?? 0;
       setViewIndex(idx);
-      const pub = data[idx];
+      const pub = items[idx];
       if (pub) onActive?.(pub);
     }
   ).current;
@@ -159,15 +101,15 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
 
   useImperativeHandle(ref, () => ({
     decide: (decision: Decision) => {
-      const current = data[viewIndex];
+      const current = items[viewIndex];
       if (!current) return;
       onDecision?.(current, decision);
 
-      const next = Math.min(viewIndex + 1, data.length - 1);
+      const next = Math.min(viewIndex + 1, items.length - 1);
       if (next !== viewIndex) {
         listRef.current?.scrollToIndex({ index: next, animated: true });
         setViewIndex(next);
-        const nextPub = data[next];
+        const nextPub = items[next];
         if (nextPub) onActive?.(nextPub);
       } else {
         loadMore();
@@ -175,19 +117,20 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
     },
   }));
 
-  const renderItem = ({ item, index }: { item: Pub; index: number }) => {
+  const renderItem = ({ item, index }: { item: VideoDTO; index: number }) => {
     const isActive = index === viewIndex;
+    // só renderiza se tiver HLS
+    const uri = item.hlsMasterUrl || "";
     return (
       <View style={s.item}>
         <Video
           style={s.video}
-          source={{ uri: item.videoUrl }}
+          source={{ uri }}
           resizeMode={ResizeMode.COVER}
           useNativeControls={false}
           shouldPlay={isFocused && isActive}
           isLooping
-          // 🔊 som só no ativo
-          isMuted={!isActive ? true : false}
+          isMuted={!isActive}
           volume={isActive ? 1.0 : 0.0}
           onError={(e) => console.log("Erro no vídeo:", e)}
         />
@@ -199,7 +142,7 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
     <View style={s.screen}>
       <FlatList
         ref={listRef}
-        data={data}
+        data={items}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         pagingEnabled
