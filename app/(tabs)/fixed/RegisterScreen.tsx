@@ -1,3 +1,4 @@
+// app/(tabs)/fixed/RegisterScreen.tsx
 import React, { useMemo, useState } from "react";
 import {
   View,
@@ -31,16 +32,11 @@ const SUGGESTED_TAGS = [
   "Networking",
 ] as const;
 
-// util: transforma "João da Silva" -> "joao_da_silva"
-function slugifyBaseName(s: string) {
-  const noAccents = s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
-  return (
-    noAccents
-      .replace(/[^a-zA-Z0-9-_]+/g, "_")
-      .replace(/_+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .toLowerCase() || "avatar"
-  );
+// util: "João da Silva" -> "joao" (backend usará <primeiroNome><uuid>.webp)
+function firstNameSlug(s: string) {
+  const first = (s || "").trim().split(/\s+/)[0] || "avatar";
+  const noAccents = first.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  return noAccents.replace(/[^a-zA-Z0-9-_]+/g, "_").toLowerCase();
 }
 
 function extFromMime(mime?: string) {
@@ -131,7 +127,7 @@ export default function RegisterScreen() {
     const mime = asset.mimeType ?? "image/jpeg";
     const ext = extFromMime(mime);
 
-    // nome temporário para enviar (o servidor renomeia)
+    // nome temporário para enviar (o servidor renomeia/força .webp)
     const name = `upload.${ext}`;
 
     setAvatarPreviewUri(uri);
@@ -148,19 +144,19 @@ export default function RegisterScreen() {
 
     const onlyDigitsPhone = telefone.replace(/\D+/g, "");
 
-    // avatarUrl AQUI é o NOME BASE desejado no CDN (sem extensão)
-    const baseFromEmail = email.includes("@") ? email.split("@")[0] : "avatar";
-    const desiredBaseName = slugifyBaseName(nome || baseFromEmail);
+    // backend usa o NOME para formar <primeiroNome><uuid>.webp
+    // enviamos avatarUrl só como sugestão/compat (ex.: "max")
+    const desiredBaseName = firstNameSlug(nome || (email.split("@")[0] || "avatar"));
 
     return {
       nome,
       email,
       telefone: onlyDigitsPhone,
       senha,
-      tipo,
+      tipo,             // "PROFISSIONAL" | "CONSULTOR"
       bio: bio || undefined,
       tags: all.length ? all : undefined,
-      avatarUrl: desiredBaseName, // back renomeia para {base}.{ext}
+      avatarUrl: desiredBaseName,
     };
   }
 

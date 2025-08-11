@@ -1,5 +1,43 @@
 // gateway/api.ts
-import { routes, buildUrl } from "./routes";
+/* ========== Rotas e helpers ========== */
+export const BASE_URL = "https://gateway-service-civz.onrender.com" as const;
+
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+export type RouteEntry = { path: string; method: HttpMethod };
+
+export const routes = {
+  users: {
+    register: { path: "/api/users/register", method: "POST" } as RouteEntry,
+    login:    { path: "/api/users/login",    method: "POST" } as RouteEntry,
+    getById:  { path: "/api/users/:id",      method: "GET"  } as RouteEntry,
+  },
+} as const;
+
+export function buildUrl(
+  entry: RouteEntry | string,
+  pathParams?: Record<string, string | number>,
+  query?: Record<string, string | number | boolean | undefined | null>
+) {
+  let full = typeof entry === "string" ? entry : entry.path;
+  if (pathParams) {
+    Object.entries(pathParams).forEach(([k, v]) => {
+      full = full.replace(`:${k}`, encodeURIComponent(String(v)));
+    });
+  }
+  if (query) {
+    const usp = new URLSearchParams();
+    Object.entries(query).forEach(([k, v]) => {
+      if (v !== undefined && v !== null) usp.append(k, String(v));
+    });
+    const qs = usp.toString();
+    if (qs) full += (full.includes("?") ? "&" : "?") + qs;
+  }
+  return `${BASE_URL}${full}`.replace(/([^:]\/)\/+/g, "$1");
+}
+
+export function getRouteMethod(entry: RouteEntry | string): HttpMethod {
+  return typeof entry === "string" ? "GET" : entry.method;
+}
 
 /* ========== Auth token & user cache ==========: */
 let _authToken: string | null = null;
@@ -18,10 +56,14 @@ export type RegisterPayload = {
   email: string;
   telefone: string;
   senha: string;
-  tipo: "CONSULTOR" | "PROFISSIONAL" | "EMPRESA";
+  // alinhado ao backend: apenas estes dois valores
+  tipo: "CONSULTOR" | "PROFISSIONAL";
   bio?: string;
   tags?: string[];
-  /** aqui vai o NOME desejado do arquivo (sem CDN). Ex.: "perfil_do_joao" */
+  /**
+   * SUGESTÃO de nome base (sem extensão). O backend usa o NOME p/ gerar
+   * <primeiroNome><uuid>.webp, e converte a imagem para .webp.
+   */
   avatarUrl?: string;
 };
 
@@ -39,10 +81,10 @@ export type User = {
   nome: string;
   email: string;
   telefone: string;
-  tipo: "CONSULTOR" | "PROFISSIONAL" | "EMPRESA";
+  tipo: "CONSULTOR" | "PROFISSIONAL";
   bio?: string | null;
   tags?: string[] | null;
-  avatarUrl?: string | null; // URL final no CDN
+  avatarUrl?: string | null; // URL final no CDN (termina com .webp)
   data_criacao?: string;
 };
 
@@ -68,8 +110,7 @@ function b64urlToString(b64url: string) {
   const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/")
     + "=".repeat((4 - (b64url.length % 4)) % 4);
   if (typeof atob === "function") return decodeURIComponent(escape(atob(b64)));
-  // RN não tem atob por padrão; usa Buffer se disponível
-  // @ts-ignore
+  // @ts-ignore - RN fallback
   const buf = typeof Buffer !== "undefined" ? Buffer.from(b64, "base64") : null;
   return buf ? buf.toString("utf8") : "";
 }
@@ -81,7 +122,7 @@ export function getUserIdFromToken(): string | null {
   try {
     const payloadStr = b64urlToString(parts[1]);
     const payload = JSON.parse(payloadStr || "{}");
-    return payload.sub || payload.userId || payload.id || null; // tenta várias claims
+    return payload.sub || payload.userId || payload.id || null;
   } catch { return null; }
 }
 
@@ -113,7 +154,7 @@ async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes>
 async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpts = {}): Promise<TRes> {
   const headers: Record<string, string> = {};
   if (opts.auth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
-  // NÃO setar Content-Type: o fetch define automaticamente com boundary
+  // NÃO setar Content-Type manualmente (RN define com boundary)
   const res = await fetchWithTimeout(url, { method: "POST", headers, body: form, timeoutMs: opts.timeoutMs ?? 25000 });
   const text = await res.text().catch(() => "");
   const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
@@ -128,18 +169,15 @@ async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpt
 export async function registerUser(payload: RegisterPayload, file?: UploadFile) {
   const url = buildUrl(routes.users.register);
 
-  // Envia SEMPRE multipart (mesmo sem arquivo, o backend aceita com avatar opcional)
+  // Envia SEMPRE multipart: "data" (JSON) + "avatar" (opcional)
   const form = new FormData();
+  form.append("data", JSON.stringify(payload) as any);
 
-  // Parte JSON "data" com o nome desejado do arquivo em avatarUrl
-  form.append('data', JSON.stringify(payload) as any);
-
-  // Parte arquivo "avatar"
-  if (file && file.uri) {
-    form.append('avatar', {
+  if (file?.uri) {
+    form.append("avatar", {
       uri: file.uri,
-      name: file.name || 'upload',
-      type: file.type || 'application/octet-stream',
+      name: file.name || "upload",
+      type: file.type || "application/octet-stream",
     } as any);
   }
 
