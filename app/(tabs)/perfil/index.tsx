@@ -1,12 +1,15 @@
-// app/(tabs)/fixed/perfil.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image, Platform, ActivityIndicator,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Picker } from "@react-native-picker/picker";
-import { getCurrentUser, getUserIdFromToken, getUserById } from "../gateway/api";
+import { getCurrentUser, getPerfilByEmail } from "../gateway/api";
+import { useFocusEffect } from "expo-router";
+
+const DEFAULT_AVATAR_URL =
+  "https://cdn-icons-png.flaticon.com/512/149/149071.png"; // imagem padrão de perfil vazio
 
 export default function Perfil() {
   const [locked, setLocked] = useState(true);
@@ -17,48 +20,58 @@ export default function Perfil() {
   const [nome, setNome] = useState<string>("");
   const [tipo, setTipo] = useState<string>("");
   const [bio, setBio] = useState<string>("");
-  const [avatar, setAvatar] = useState<string | undefined>(undefined);
+  const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined);
   const [tags, setTags] = useState<string[]>([]);
+  const [email, setEmail] = useState<string>("");
 
   const itemColor = Platform.OS === "android" ? "#000" : "#fff";
 
   useEffect(() => {
-    // tenta cache primeiro
     const cached = getCurrentUser();
-    if (cached) {
-      hydrate(cached);
-      setLoading(false);
-      return;
-    }
-    // tenta via token -> getById
-    (async () => {
-      try {
-        const id = getUserIdFromToken();
-        if (!id) throw new Error("Token sem user id");
-        const user = await getUserById(id);
-        hydrate(user);
-      } catch (e) {
-        console.warn("Perfil: falha ao carregar usuário:", (e as any)?.message || e);
-      } finally {
-        setLoading(false);
-      }
-    })();
+    if (cached) hydrate(cached);
+    setLoading(false);
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      const cached = getCurrentUser();
+      if (cached) hydrate(cached);
+    }, [])
+  );
 
   function hydrate(u: any) {
     setNome(u?.nome ?? "");
     setTipo(u?.tipo ?? "");
     setBio(u?.bio ?? "");
-    setAvatar(u?.avatar ?? undefined);
-    setTags(Array.isArray(u?.tags) ? u.tags : []);
+    setAvatarUrl(u?.avatarUrl ?? undefined);
+    setEmail(u?.email ?? "");
   }
 
-  const displayAvatar = useMemo(() => {
-    if (avatar && typeof avatar === "string") return { uri: avatar };
-    return require("./avatar-placeholder.png");
-  }, [avatar]);
+  function toImageSource(url?: string) {
+    if (!url || typeof url !== "string" || !/^https?:\/\//i.test(url.trim())) {
+      return { uri: DEFAULT_AVATAR_URL };
+    }
+    return { uri: url.trim() };
+  }
+
+  const displayAvatar = useMemo(() => toImageSource(avatarUrl), [avatarUrl]);
+  const [avatarError, setAvatarError] = useState(false);
 
   const toggleLock = () => setLocked(!locked);
+
+  async function refreshPerfil() {
+    if (!email) return;
+    try {
+      setLoading(true);
+      const perfil = await getPerfilByEmail(email);
+      hydrate(perfil);
+      setAvatarError(false);
+    } catch (e: any) {
+      console.warn("Refresh perfil falhou:", e?.message || e);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -77,43 +90,41 @@ export default function Perfil() {
         {/* Cabeçalho */}
         <View style={s.header}>
           <Text style={s.title}>Perfil do Usuário</Text>
-          <TouchableOpacity onPress={toggleLock}>
-            <Ionicons name={locked ? "lock-closed" : "lock-open"} size={24} color="#fff" />
-          </TouchableOpacity>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
+            <TouchableOpacity onPress={refreshPerfil} style={s.iconBtn}>
+              <Ionicons name="refresh" size={20} color="#fff" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={toggleLock} style={s.iconBtn}>
+              <Ionicons name={locked ? "lock-closed" : "lock-open"} size={20} color="#fff" />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Foto e nome */}
         <View style={s.profileSection}>
-          <Image source={displayAvatar} style={s.avatar} />
+          <Image
+            source={avatarError ? { uri: DEFAULT_AVATAR_URL } : displayAvatar}
+            style={s.avatar}
+            onError={() => setAvatarError(true)}
+          />
           <View>
             <Text style={s.name}>{nome || "—"}</Text>
             <Text style={s.type}>{(tipo || "—").toString()}</Text>
+            {!!email && <Text style={s.email}>{email}</Text>}
           </View>
         </View>
 
         {/* Biografia */}
         <Text style={s.label}>Biografia</Text>
         <TextInput
-          style={s.input}
-          value={bio}
+          style={[s.input, { minHeight: 80, textAlignVertical: "top" }]}
+          value={bio ?? ""}
           editable={!locked}
           placeholder="Fale um pouco sobre você"
           placeholderTextColor="#888"
           onChangeText={setBio}
+          multiline
         />
-
-        {/* Tags */}
-        <Text style={s.label}>Tags</Text>
-        <View style={s.tagsContainer}>
-          {(tags ?? []).map((tag, i) => (
-            <View key={`${tag}-${i}`} style={s.tag}>
-              <Text style={s.tagText}>#{tag}</Text>
-            </View>
-          ))}
-          {(!tags || tags.length === 0) && (
-            <Text style={{ color: "#777" }}>Sem tags</Text>
-          )}
-        </View>
 
         {/* Tema */}
         <Text style={s.label}>Tema</Text>
@@ -157,6 +168,8 @@ export default function Perfil() {
         <TouchableOpacity style={[s.button, s.subscribeButton]}>
           <Text style={s.buttonText}>Assinar Streaming</Text>
         </TouchableOpacity>
+
+        <View style={{ height: 24 }} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -166,11 +179,13 @@ const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#121212", padding: 16 },
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 },
   title: { fontSize: 20, fontWeight: "bold", color: "#fff" },
+  iconBtn: { backgroundColor: "#2a2a2a", padding: 8, borderRadius: 8 },
 
   profileSection: { flexDirection: "row", alignItems: "center", marginBottom: 20 },
   avatar: { width: 70, height: 70, borderRadius: 35, backgroundColor: "#2a2a2a", marginRight: 16, borderWidth: 1, borderColor: "#333" },
   name: { fontSize: 18, fontWeight: "bold", color: "#fff" },
   type: { fontSize: 14, color: "#ccc" },
+  email: { fontSize: 12, color: "#aaa", marginTop: 2 },
 
   label: { color: "#aaa", marginTop: 10, marginBottom: 4 },
   input: { backgroundColor: "#1e1e1e", color: "#fff", borderRadius: 8, padding: 10 },

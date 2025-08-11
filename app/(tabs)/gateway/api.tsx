@@ -1,4 +1,3 @@
-// gateway/api.ts
 /* ========== Rotas e helpers ========== */
 export const BASE_URL = "https://gateway-service-civz.onrender.com" as const;
 
@@ -7,9 +6,10 @@ export type RouteEntry = { path: string; method: HttpMethod };
 
 export const routes = {
   users: {
-    register: { path: "/api/users/register", method: "POST" } as RouteEntry,
-    login:    { path: "/api/users/login",    method: "POST" } as RouteEntry,
-    getById:  { path: "/api/users/:id",      method: "GET"  } as RouteEntry,
+    register:  { path: "/api/users/register",  method: "POST" } as RouteEntry,
+    login:     { path: "/api/users/login",     method: "POST" } as RouteEntry,
+    getById:   { path: "/api/users/:id",       method: "GET"  } as RouteEntry,
+    getPerfil: { path: "/api/users/perfil",    method: "GET"  } as RouteEntry, // 👈 novo
   },
 } as const;
 
@@ -41,40 +41,21 @@ export function getRouteMethod(entry: RouteEntry | string): HttpMethod {
 
 /* ========== Auth token & user cache ==========: */
 let _authToken: string | null = null;
-let _currentUser: User | null = null;
 
-export function setAuthToken(token: string | null) { _authToken = token; }
-export function getAuthToken() { return _authToken; }
-export function clearAuthToken() { _authToken = null; _currentUser = null; }
-
-export function setCurrentUser(u: User | null) { _currentUser = u; }
-export function getCurrentUser() { return _currentUser; }
-
-/* ========== Tipos ========== */
-export type RegisterPayload = {
+/**
+ * Cache do usuário atual.
+ * Armazenamos o objeto de perfil obtido do endpoint /perfil.
+ */
+export type PerfilResponse = {
   nome: string;
   email: string;
   telefone: string;
-  senha: string;
-  // alinhado ao backend: apenas estes dois valores
   tipo: "CONSULTOR" | "PROFISSIONAL";
-  bio?: string;
-  tags?: string[];
-  /**
-   * SUGESTÃO de nome base (sem extensão). O backend usa o NOME p/ gerar
-   * <primeiroNome><uuid>.webp, e converte a imagem para .webp.
-   */
-  avatarUrl?: string;
+  bio?: string | null;
+  tags?: string[] | null;
+  avatarUrl?: string | null; // URL final no CDN (.webp)
+  data_criacao?: string | null;
 };
-
-export type UploadFile = {
-  uri: string;      // file:/// ou content://
-  name?: string;    // opcional (server renomeia)
-  type?: string;    // image/jpeg, image/png, image/webp...
-};
-
-export type LoginPayload = { email: string; password: string };
-export type LoginResponse = { token: string };
 
 export type User = {
   id: string;
@@ -84,9 +65,45 @@ export type User = {
   tipo: "CONSULTOR" | "PROFISSIONAL";
   bio?: string | null;
   tags?: string[] | null;
-  avatarUrl?: string | null; // URL final no CDN (termina com .webp)
-  data_criacao?: string;
+  avatarUrl?: string | null;
+  data_criacao?: string | null;
 };
+
+/** Mantemos um "perfil atual" genérico para preencher a UI. */
+let _currentUser: (PerfilResponse | User) | null = null;
+
+/** Cache simples por e-mail com TTL para evitar chamadas repetidas ao /perfil */
+type PerfilCacheEntry = { data: PerfilResponse; ts: number };
+const _perfilCache = new Map<string, PerfilCacheEntry>();
+const PERFIL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+
+export function setAuthToken(token: string | null) { _authToken = token; }
+export function getAuthToken() { return _authToken; }
+export function clearAuthToken() { _authToken = null; _currentUser = null; _perfilCache.clear(); }
+
+export function setCurrentUser(u: (PerfilResponse | User) | null) { _currentUser = u; }
+export function getCurrentUser() { return _currentUser; }
+
+/* ========== Tipos de payloads ========== */
+export type RegisterPayload = {
+  nome: string;
+  email: string;
+  telefone: string;
+  senha: string;
+  tipo: "CONSULTOR" | "PROFISSIONAL";
+  bio?: string;
+  tags?: string[];
+  avatarUrl?: string;
+};
+
+export type UploadFile = {
+  uri: string;
+  name?: string;
+  type?: string;
+};
+
+export type LoginPayload = { email: string; password: string };
+export type LoginResponse = { token: string };
 
 type RequestOpts = {
   timeoutMs?: number;
@@ -154,7 +171,6 @@ async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes>
 async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpts = {}): Promise<TRes> {
   const headers: Record<string, string> = {};
   if (opts.auth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
-  // NÃO setar Content-Type manualmente (RN define com boundary)
   const res = await fetchWithTimeout(url, { method: "POST", headers, body: form, timeoutMs: opts.timeoutMs ?? 25000 });
   const text = await res.text().catch(() => "");
   const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
@@ -169,7 +185,6 @@ async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpt
 export async function registerUser(payload: RegisterPayload, file?: UploadFile) {
   const url = buildUrl(routes.users.register);
 
-  // Envia SEMPRE multipart: "data" (JSON) + "avatar" (opcional)
   const form = new FormData();
   form.append("data", JSON.stringify(payload) as any);
 
@@ -194,7 +209,7 @@ export async function loginUser(payload: LoginPayload): Promise<LoginResponse> {
   const token = typeof parsed === "string" ? parsed : parsed?.token;
   if (!token) throw new Error("Resposta de login inválida");
   setAuthToken(token);
-  await initCurrentUserFromToken().catch(() => void 0);
+  // não iniciei _currentUser aqui; deixo o /perfil popular de forma confiável
   return { token };
 }
 
@@ -203,7 +218,25 @@ export async function getUserById(id: string) {
   return getJson<User>(url, { auth: true, timeoutMs: 15000, retries: 1 });
 }
 
-/** Decodifica o JWT, extrai o userId e popula o cache _currentUser */
+/** Busca perfil por e-mail com cache por 5 minutos. Também preenche _currentUser. */
+export async function getPerfilByEmail(email: string): Promise<PerfilResponse> {
+  const key = email.trim().toLowerCase();
+  const now = Date.now();
+  const cached = _perfilCache.get(key);
+  if (cached && (now - cached.ts) < PERFIL_CACHE_TTL_MS) {
+    setCurrentUser(cached.data);
+    return cached.data;
+  }
+
+  const url = buildUrl(routes.users.getPerfil, undefined, { email: key });
+  const perfil = await getJson<PerfilResponse>(url, { auth: true, timeoutMs: 15000, retries: 1 });
+
+  _perfilCache.set(key, { data: perfil, ts: now });
+  setCurrentUser(perfil);
+  return perfil;
+}
+
+/** Decodifica o JWT, extrai o userId e popula o cache _currentUser (fallback via /:id). */
 export async function initCurrentUserFromToken(): Promise<User | null> {
   const id = getUserIdFromToken();
   if (!id) return null;

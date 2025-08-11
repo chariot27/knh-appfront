@@ -1,4 +1,3 @@
-// app/(tabs)/fixed/login.tsx
 import { useState } from "react";
 import {
   View, TextInput, Alert, StyleSheet, TouchableOpacity, Text, Image, BackHandler, Platform,
@@ -6,7 +5,7 @@ import {
 import { router } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
-import { loginUser, getCurrentUser } from "../gateway/api";
+import { loginUser, getPerfilByEmail } from "../gateway/api";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -19,9 +18,9 @@ export default function Login() {
       const { token } = await loginUser({ email: email.trim(), password: senha.trim() });
       console.log("🔑 token:", token);
 
-      // opcional: conferir se já temos o usuário em cache
-      const me = getCurrentUser();
-      console.log("👤 user:", me?.nome);
+      // ⚡ Após logar, já puxa o perfil e popula o cache
+      const perfil = await getPerfilByEmail(email.trim());
+      console.log("👤 Perfil carregado:", perfil?.nome);
 
       router.replace("/(tabs)/fixed/dashboard");
     } catch (e: any) {
@@ -64,7 +63,11 @@ export default function Login() {
         </LinearGradient>
       </TouchableOpacity>
 
-      <TouchableOpacity activeOpacity={0.85} onPress={() => router.push("/(tabs)/fixed/RegisterScreen")} style={styles.buttonWrapper}>
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPress={() => router.push("/(tabs)/fixed/RegisterScreen")}
+        style={styles.buttonWrapper}
+      >
         <LinearGradient colors={["#00f2ea", "#ff0050"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.button}>
           <Text style={styles.buttonText}>Cadastrar</Text>
         </LinearGradient>
