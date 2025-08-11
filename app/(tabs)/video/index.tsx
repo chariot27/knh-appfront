@@ -1,4 +1,3 @@
-// app/(tabs)/video/index.tsx
 import React, { useCallback, useEffect, useState } from "react";
 import {
   View,
@@ -14,8 +13,9 @@ import * as ImagePicker from "expo-image-picker";
 import { Feather } from "@expo/vector-icons";
 import { Video, ResizeMode, Audio } from "expo-av";
 
-// ⛓️ Helpers da API (ajuste o caminho conforme sua estrutura)
-import { uploadVideo } from "../gateway/api"; // <- ajuste o path
+// ⛓️ Helpers da API — caminho relativo a partir de app/(tabs)/video/
+// se seu projeto usa alias "@/lib/api", pode trocar.
+import { uploadVideo } from "../gateway/api";
 
 export default function AddVideoScreen() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);

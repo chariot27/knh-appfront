@@ -1,4 +1,3 @@
-// src/lib/api.ts
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /* ========== Base/rotas/helpers ========== */
@@ -120,11 +119,12 @@ async function fetchWithTimeout(
   const { timeoutMs = 20000, ...rest } = init || {};
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
-  try { 
+  try {
     const headers = { Accept: "application/json", ...(rest.headers || {}) };
     return await fetch(input, { ...rest, headers, signal: controller.signal });
+  } finally {
+    clearTimeout(id);
   }
-  finally { clearTimeout(id); }
 }
 
 function b64urlToString(b64url: string) {
@@ -172,12 +172,17 @@ async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes>
 }
 
 /* ====== Multipart helper ====== */
-async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpts = {}): Promise<TRes> {
-  // IMPORTANTE: não setar Content-Type manualmente (RN define boundary)
+async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpts = {}) {
+  // Importante: não setar Content-Type manualmente; RN define o boundary
   const headers: Record<string, string> = { Accept: "application/json" };
   if (opts.auth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
 
-  const res = await fetchWithTimeout(url, { method: "POST", headers, body: form, timeoutMs: opts.timeoutMs ?? 25000 });
+  const res = await fetchWithTimeout(url, {
+    method: "POST",
+    headers,
+    body: form,
+    timeoutMs: opts.timeoutMs ?? 25000,
+  });
   const text = await res.text().catch(() => "");
   const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
   if (!res.ok) {
