@@ -1,4 +1,3 @@
-// app/(tabs)/fixed/register.tsx
 import React, { useMemo, useState } from "react";
 import {
   View,
@@ -18,14 +17,8 @@ import { router } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { Picker } from "@react-native-picker/picker";
 import * as ImagePicker from "expo-image-picker";
-import * as FileSystem from "expo-file-system";
-import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 
-import { registerUser } from "../gateway/api";
-
-// PNG 1x1 transparente (fallback para nunca enviar avatarUrl = null)
-const DEFAULT_AVATAR_DATAURL =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/wwAAn8B9o3YfHkAAAAASUVORK5CYII=";
+import { registerUser, type UploadFile } from "../gateway/api";
 
 // Tags sugeridas (curadas)
 const SUGGESTED_TAGS = [
@@ -38,25 +31,52 @@ const SUGGESTED_TAGS = [
   "Networking",
 ] as const;
 
+// util: transforma "João da Silva" -> "joao_da_silva"
+function slugifyBaseName(s: string) {
+  const noAccents = s.normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  return (
+    noAccents
+      .replace(/[^a-zA-Z0-9-_]+/g, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .toLowerCase() || "avatar"
+  );
+}
+
+function extFromMime(mime?: string) {
+  switch (mime) {
+    case "image/png":
+      return "png";
+    case "image/webp":
+      return "webp";
+    case "image/jpeg":
+    case "image/jpg":
+      return "jpg";
+    case "image/gif":
+      return "gif";
+    default:
+      return "jpg";
+  }
+}
+
 export default function RegisterScreen() {
   const [nome, setNome] = useState("");
   const [email, setEmail] = useState("");
   const [telefone, setTelefone] = useState("");
   const [senha, setSenha] = useState("");
-  const [tipo, setTipo] = useState<"PROFISSIONAL" | "CONSULTOR" >(
-    "PROFISSIONAL"
-  );
+  const [tipo, setTipo] = useState<"PROFISSIONAL" | "CONSULTOR">("PROFISSIONAL");
   const [bio, setBio] = useState("");
 
-  // Novo: controle de tags
+  // Tags
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [customTag, setCustomTag] = useState("");
   const [manualTagsOpen, setManualTagsOpen] = useState(false);
-
-  // Mantém compatibilidade com input manual (opcional)
   const [tagsRaw, setTagsRaw] = useState("");
 
-  const [avatarBase64, setAvatarBase64] = useState<string | null>(null);
+  // Avatar
+  const [avatarPreviewUri, setAvatarPreviewUri] = useState<string | null>(null);
+  const [avatarFile, setAvatarFile] = useState<UploadFile | null>(null);
+
   const [submitting, setSubmitting] = useState(false);
 
   const selectedSet = useMemo(
@@ -100,91 +120,47 @@ export default function RegisterScreen() {
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.8,
-      base64: true,
+      quality: 0.9,
+      base64: false,
     });
 
     if (result.canceled || !result.assets?.length) return;
 
     const asset = result.assets[0];
+    const uri = asset.uri;
     const mime = asset.mimeType ?? "image/jpeg";
+    const ext = extFromMime(mime);
 
-    try {
-      // 1) tenta usar o base64 que veio
-      let dataUrl: string | null =
-        asset.base64 ? `data:${mime};base64,${asset.base64}` : null;
+    // nome temporário para enviar (o servidor renomeia)
+    const name = `upload.${ext}`;
 
-      // 2) se não veio, gera base64 com o manipulator
-      if (!dataUrl) {
-        const manipulated = await manipulateAsync(
-          asset.uri,
-          [{ resize: { width: 640 } }],
-          { compress: 0.7, format: SaveFormat.JPEG, base64: true }
-        );
-        if (manipulated.base64) {
-          dataUrl = `data:image/jpeg;base64,${manipulated.base64}`;
-        }
-      }
-
-      // 3) fallback final: ler arquivo em base64
-      if (!dataUrl) {
-        const raw = await FileSystem.readAsStringAsync(asset.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        dataUrl = `data:${mime};base64,${raw}`;
-      }
-
-      if (!dataUrl) {
-        Alert.alert("Erro", "Não foi possível obter a imagem selecionada.");
-        return;
-      }
-
-      setAvatarBase64(dataUrl);
-    } catch (err) {
-      console.error("Erro ao processar imagem:", err);
-      Alert.alert("Erro", "Falha ao processar a imagem.");
-    }
+    setAvatarPreviewUri(uri);
+    setAvatarFile({ uri, type: mime, name });
   }
 
   function buildPayload() {
-    // junta chips + (opcional) manualTags
     const manual = tagsRaw
       .split(",")
       .map((t) => t.trim())
       .filter(Boolean);
 
-    // normaliza (sem duplicatas)
-    const all = Array.from(
-      new Set([...selectedTags, ...manual].map((t) => t.trim()))
-    );
+    const all = Array.from(new Set([...selectedTags, ...manual].map((t) => t.trim())));
 
     const onlyDigitsPhone = telefone.replace(/\D+/g, "");
 
-    // evita payload gigante (504)
-    const MAX_DATAURL_CHARS = 270_000; // ~200KB
-    const avatarOk =
-      avatarBase64 && avatarBase64.length <= MAX_DATAURL_CHARS
-        ? avatarBase64
-        : undefined;
-
-    if (avatarBase64 && !avatarOk) {
-      console.warn(
-        `⚠️ avatar muito grande: ${avatarBase64.length} chars — omitindo do payload`
-      );
-    }
-
-    // garante string válida
-    const avatarUrl = avatarOk ?? DEFAULT_AVATAR_DATAURL;
+    // avatarUrl AQUI é o NOME BASE desejado no CDN (sem extensão)
+    const baseFromEmail = email.includes("@") ? email.split("@")[0] : "avatar";
+    const desiredBaseName = slugifyBaseName(nome || baseFromEmail);
 
     return {
       nome,
       email,
       telefone: onlyDigitsPhone,
       senha,
-      tipo, // "CONSULTOR" | "PROFISSIONAL"
+      tipo,
       bio: bio || undefined,
       tags: all.length ? all : undefined,
-      avatarUrl,
+      avatarUrl: desiredBaseName, // back renomeia para {base}.{ext}
     };
   }
 
@@ -192,28 +168,19 @@ export default function RegisterScreen() {
     const payload = buildPayload();
 
     if (!payload.nome || !payload.email || !payload.senha || !payload.telefone) {
-      Alert.alert(
-        "Campos obrigatórios",
-        "Preencha nome, email, telefone e senha."
-      );
+      Alert.alert("Campos obrigatórios", "Preencha nome, email, telefone e senha.");
       return;
     }
 
-    // log sem base64 gigante
-    const toLog = {
-      ...payload,
-      avatarUrl: payload.avatarUrl
-        ? `<data-url: ${payload.avatarUrl.length} chars>`
-        : undefined,
-    };
+    const toLog = { ...payload, _hasFile: !!avatarFile };
     console.log("➡️ RegisterScreen enviando:", JSON.stringify(toLog, null, 2));
 
     setSubmitting(true);
     try {
-      const resp = await registerUser(payload);
+      const resp = await registerUser(payload, avatarFile || undefined);
       console.log("✅ RegisterScreen resposta:", resp);
 
-      // limpa o formulário antes de sair
+      // reset
       setNome("");
       setEmail("");
       setTelefone("");
@@ -222,16 +189,14 @@ export default function RegisterScreen() {
       setBio("");
       setTagsRaw("");
       setSelectedTags([]);
-      setAvatarBase64(null);
+      setAvatarPreviewUri(null);
+      setAvatarFile(null);
 
       Alert.alert("Sucesso", "Cadastro realizado com sucesso!");
       router.replace("/(tabs)/fixed/login");
     } catch (e: any) {
       console.error("❌ RegisterScreen erro:", e);
-      Alert.alert(
-        "Erro ao cadastrar",
-        e?.message || "Não foi possível concluir o cadastro."
-      );
+      Alert.alert("Erro ao cadastrar", e?.message || "Não foi possível concluir o cadastro.");
     } finally {
       setSubmitting(false);
     }
@@ -242,29 +207,19 @@ export default function RegisterScreen() {
       behavior={Platform.select({ ios: "padding", android: undefined })}
       style={styles.flex}
     >
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        keyboardShouldPersistTaps="handled"
-      >
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <View style={styles.container}>
           <Text style={styles.title}>Criar conta</Text>
 
           {/* Avatar */}
-          <TouchableOpacity
-            onPress={escolherImagem}
-            style={styles.avatarWrapper}
-            disabled={submitting}
-          >
+          <TouchableOpacity onPress={escolherImagem} style={styles.avatarWrapper} disabled={submitting}>
             <Image
               source={{
-                uri:
-                  avatarBase64 ||
-                  // UI mostra ícone, payload manda DEFAULT_AVATAR_DATAURL
-                  "https://cdn-icons-png.flaticon.com/512/847/847969.png",
+                uri: avatarPreviewUri || "https://cdn-icons-png.flaticon.com/512/847/847969.png",
               }}
               style={styles.avatar}
             />
-            {!avatarBase64 && (
+            {!avatarPreviewUri && (
               <View style={styles.plusOverlay}>
                 <Text style={styles.plusText}>+</Text>
               </View>
@@ -332,12 +287,11 @@ export default function RegisterScreen() {
             editable={!submitting}
           />
 
-          {/* === TAGS ELEGANTES === */}
+          {/* === TAGS === */}
           <View style={styles.tagsCard}>
             <Text style={styles.sectionTitle}>Escolha suas áreas</Text>
 
-            {/* Chips sugeridos */}
-            <View style={styles.chipsWrap}>
+            <View className="chipsWrap" style={styles.chipsWrap}>
               {SUGGESTED_TAGS.map((tag) => {
                 const active = selectedSet.has(tag.toLowerCase());
                 return (
@@ -383,10 +337,7 @@ export default function RegisterScreen() {
                 onPress={addCustomTag}
                 disabled={!customTag.trim()}
                 activeOpacity={0.85}
-                style={[
-                  styles.addBtnWrap,
-                  !customTag.trim() && { opacity: 0.6 },
-                ]}
+                style={[styles.addBtnWrap, !customTag.trim() && { opacity: 0.6 }]}
               >
                 <LinearGradient
                   colors={["#00f2ea", "#ff0050"]}
@@ -399,7 +350,7 @@ export default function RegisterScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* Lista de tags escolhidas (com remover) */}
+            {/* Lista de tags escolhidas */}
             {selectedTags.length > 0 && (
               <>
                 <Text style={styles.selectedTitle}>Selecionadas</Text>
@@ -409,10 +360,7 @@ export default function RegisterScreen() {
                       <Text style={styles.selectedText}>{t}</Text>
                       <Pressable
                         onPress={() => toggleTag(t)}
-                        style={({ pressed }) => [
-                          styles.removePill,
-                          pressed && { opacity: 0.7 },
-                        ]}
+                        style={({ pressed }) => [styles.removePill, pressed && { opacity: 0.7 }]}
                         hitSlop={8}
                       >
                         <Text style={styles.removePillText}>×</Text>
@@ -423,13 +371,10 @@ export default function RegisterScreen() {
               </>
             )}
 
-            {/* Alternar input manual (opcional) */}
+            {/* Alternar input manual */}
             <Pressable
               onPress={() => setManualTagsOpen((v) => !v)}
-              style={({ pressed }) => [
-                styles.manualToggle,
-                pressed && { opacity: 0.8 },
-              ]}
+              style={({ pressed }) => [styles.manualToggle, pressed && { opacity: 0.8 }]}
             >
               <Text style={styles.manualToggleText}>
                 {manualTagsOpen ? "Ocultar entrada manual" : "Adicionar manualmente (opcional)"}
@@ -468,10 +413,7 @@ export default function RegisterScreen() {
             </LinearGradient>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            onPress={() => router.replace("/(tabs)/fixed/login")}
-            style={{ marginTop: 8 }}
-          >
+          <TouchableOpacity onPress={() => router.replace("/(tabs)/fixed/login")} style={{ marginTop: 8 }}>
             <Text style={{ color: "#bbb" }}>Já tem conta? Entrar</Text>
           </TouchableOpacity>
         </View>
@@ -533,7 +475,7 @@ const styles = StyleSheet.create({
   },
   picker: { width: "100%", height: 50, color: "#fff" },
 
-  // ===== TAGS ELEGANTES =====
+  // ===== TAGS =====
   tagsCard: {
     width: "92%",
     backgroundColor: "#0c0c0c",
@@ -545,15 +487,8 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { color: "#fff", fontSize: 16, fontWeight: "700", marginBottom: 4 },
 
-  chipsWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-  },
-  chipBase: {
-    borderRadius: 999,
-    overflow: "hidden",
-  },
+  chipsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  chipBase: { borderRadius: 999, overflow: "hidden" },
   chipIdle: {
     paddingHorizontal: 14,
     paddingVertical: 8,
@@ -561,24 +496,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#262626",
   },
-  chipActive: {
-    // conteúdo fica dentro do gradient
-  },
-  chipGradient: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
-  },
+  chipActive: {},
+  chipGradient: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999 },
   chipTextIdle: { color: "#bbb", fontSize: 14, fontWeight: "600" },
   chipTextActive: { color: "#fff", fontSize: 14, fontWeight: "700" },
   chipPressed: { transform: [{ scale: 0.98 }] },
 
-  customRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginTop: 6,
-  },
+  customRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 6 },
   customInput: {
     flex: 1,
     height: 44,
@@ -590,31 +514,12 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 14,
   },
-  addBtnWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    overflow: "hidden",
-  },
-  addBtn: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
+  addBtnWrap: { width: 44, height: 44, borderRadius: 12, overflow: "hidden" },
+  addBtn: { flex: 1, alignItems: "center", justifyContent: "center" },
   addBtnText: { color: "#fff", fontSize: 22, fontWeight: "900", marginTop: -2 },
 
-  selectedTitle: {
-    color: "#aaa",
-    fontSize: 13,
-    fontWeight: "700",
-    marginTop: 4,
-  },
-  selectedWrap: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    marginTop: 4,
-  },
+  selectedTitle: { color: "#aaa", fontSize: 13, fontWeight: "700", marginTop: 4 },
+  selectedWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 4 },
   selectedPill: {
     flexDirection: "row",
     alignItems: "center",
