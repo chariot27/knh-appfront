@@ -1,4 +1,3 @@
-// app/(tabs)/pubs.tsx
 import React, {
   useCallback,
   useEffect,
@@ -17,7 +16,6 @@ import {
   Text,
 } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
-import { Audio } from "expo-av";
 
 import { fetchFeedReady, VideoDTO } from "../gateway/api";
 import SafeVideo from "../gateway/SafeVideo";
@@ -47,26 +45,12 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
   const isFocused = useIsFocused();
   const listRef = useRef<FlatList<VideoDTO>>(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: false,
-          staysActiveInBackground: false,
-          shouldDuckAndroid: true,
-          playsInSilentModeIOS: true,
-        });
-      } catch (e) {
-        console.log("[AUDIO] setAudioModeAsync error:", e);
-      }
-    })();
-  }, []);
-
   const loadFirstPage = useCallback(async () => {
     setInitialLoading(true);
     setFeedError(null);
     try {
-      const data = await fetchFeedReady(PAGE_SIZE);
+      // evita GET extra com Range nas URLs HLS (menos ruído de log)
+      const data = await fetchFeedReady(PAGE_SIZE, { preflight: false });
       console.log("[FEED] itens recebidos:", data.length);
       setItems(data);
       if (data[0]) onActive?.(data[0]);
@@ -98,7 +82,7 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
 
   const loadMore = useCallback(async () => {
     if (loadingMore) return;
-    // plugue paginação aqui quando o backend suportar
+    // Quando o backend suportar paginação, adicionar aqui
   }, [loadingMore]);
 
   const onViewableItemsChanged = useRef(

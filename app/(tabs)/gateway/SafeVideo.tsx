@@ -1,138 +1,127 @@
 // app/gateway/SafeVideo.tsx
-import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, ActivityIndicator, Platform, StyleSheet } from "react-native";
-import { VideoView, useVideoPlayer, type VideoPlayer } from "expo-video";
+import React, { useEffect, useMemo, useRef } from "react";
+import { View, StyleSheet, Platform } from "react-native";
+import { VideoView, useVideoPlayer, type VideoSource } from "expo-video";
 
 type Props = {
-  uri?: string | null;
+  uri: string | null;
   autoPlay?: boolean;
-  /** MP4 de teste – se tocar e o HLS não, problema é a playlist/CDN */
   fallbackMp4?: string;
+  /** opcional, só pra identificar nos logs */
+  tag?: string;
 };
 
-async function preflight(url: string, ms = 7000): Promise<void> {
-  const ctrl = new AbortController();
-  const id = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const res = await fetch(url, {
-      method: "GET",
-      headers: { Range: "bytes=0-1" },
-      signal: ctrl.signal as any,
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  } finally {
-    clearTimeout(id);
-  }
-}
+export default function SafeVideo({ uri, autoPlay = false, fallbackMp4, tag = "SafeVideo" }: Props) {
+  const idRef = useRef(Math.random().toString(36).slice(2, 8));
+  const id = idRef.current;
+  const log = (...args: any[]) => console.log(`[${tag}#${id}]`, ...args);
 
-export default function SafeVideo({ uri, autoPlay = true, fallbackMp4 }: Props) {
-  const [loading, setLoading] = useState<boolean>(!!uri);
-  const [err, setErr] = useState<string | null>(null);
+  // Decide a fonte: HLS assinado > fallback MP4
+  const source = useMemo<VideoSource | null>(() => {
+    const u = uri || fallbackMp4 || null;
+    const src = u ? { uri: u } : null;
+    log("source ->", src?.uri ?? null);
+    return src;
+  }, [uri, fallbackMp4]);
 
-  const isHls = !!uri && uri.toLowerCase().includes(".m3u8");
-  const sourceUri = useMemo(() => uri ?? null, [uri]);
-
-  const player: VideoPlayer = useVideoPlayer(sourceUri, (p) => {
+  // Cria o player (loop por padrão).
+  // O hook exige um VideoSource no tipo; usamos cast pra permitir "sem fonte" inicialmente.
+  const player = useVideoPlayer(source as unknown as VideoSource, (p) => {
     p.loop = true;
-    p.muted = !autoPlay;
-    p.volume = autoPlay ? 1.0 : 0.0;
   });
 
-  // Preflight (pega 403/503 antes do player tentar)
+  // Log de montagem/desmontagem
   useEffect(() => {
-    let mounted = true;
-    setErr(null);
-    setLoading(!!uri);
-    (async () => {
+    log("mounted on", Platform.OS);
+    return () => {
       try {
-        if (!uri) return;
-        await preflight(uri, 7000);
-        if (!mounted) return;
-        setLoading(false);
-        if (autoPlay) player.play();
-      } catch (e: unknown) {
-        if (!mounted) return;
-        const msg = e instanceof Error ? e.message : String(e);
-        setErr(`Acesso ao vídeo bloqueado: ${msg}`);
-        setLoading(false);
-      }
-    })();
-    return () => {
-      mounted = false;
-      player.pause();
+        // não chame release() manualmente no expo-video; o hook gerencia
+        log("unmounted");
+      } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uri, autoPlay]);
+  }, []);
 
-  // Observa eventos do player (tipados)
+  // Troca de source quando mudar o HLS/fallback
   useEffect(() => {
-    const offStatus = player.addListener("statusChange", (status: any) => {
-      if (status?.isLoaded && loading) setLoading(false);
-      if (!status?.isLoaded && status?.error) {
-        const m = String(status.error);
-        console.warn("[expo-video:status error]", m);
-        setErr(m);
-        setLoading(false);
+    if (!player) return;
+    try {
+      if (source) {
+        player.replace(source as VideoSource); // typings: void
+      } else {
+        log("player.pause() — no source");
+        player.pause();
+      }
+    } catch (e) {
+      log("replace/pause error:", e);
+    }
+  }, [source, player]);
+
+  // Sincroniza autoplay com visibilidade/foco do item
+  useEffect(() => {
+    if (!player) return;
+    const idRAF = requestAnimationFrame(() => {
+      try {
+        if (autoPlay && source) {
+          log("autoplay -> play()");
+          player.play();
+        } else {
+          log("autoplay -> pause()");
+          player.pause();
+        }
+      } catch (e) {
+        log("autoplay play/pause error:", e);
       }
     });
-    // Alguns builds expõem "renderedFirstFrame"; use cast pra não brigar com TS se não existir
-    const offFirstFrame = (player as any).addListener?.("renderedFirstFrame", () => {
-      if (loading) setLoading(false);
-    });
-    return () => {
-      offStatus.remove();
-      offFirstFrame?.remove?.();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [player, loading]);
+    return () => cancelAnimationFrame(idRAF);
+  }, [autoPlay, player, source]);
 
-  // Atualiza play/pause quando a tela/índice muda
+  // Listeners se a API expuser (algumas versões têm .addListener)
   useEffect(() => {
-    if (autoPlay && !err) player.play();
-    else player.pause();
-  }, [autoPlay, err, player]);
+    const subs: any[] = [];
+    const anyPlayer: any = player as any;
 
-  if (!uri) {
-    return (
-      <View style={s.box}>
-        <Text style={s.msg}>Sem URL de vídeo.</Text>
-      </View>
-    );
-  }
+    const add = (evt: string) => {
+      if (anyPlayer?.addListener) {
+        const sub = anyPlayer.addListener(evt, (payload: any) => {
+          log(`event:${evt}`, payload);
+        });
+        subs.push(sub);
+      }
+    };
+
+    // Tente registrar eventos comuns; se não existir, nada acontece
+    add("statusChange");          // status de playback
+    add("playbackStateChange");   // playing/paused/buffering
+    add("sourceChange");          // quando troca a fonte
+    add("timeUpdate");            // posição atual
+    add("durationChange");        // duração
+    add("bufferingChange");       // buffer
+    add("error");                 // erros do player
+
+    return () => {
+      subs.forEach((s: any) => s?.remove?.());
+    };
+  }, [player]);
 
   return (
-    <View style={s.box}>
-      {loading && !err && <ActivityIndicator />}
-      {err && (
-        <View style={s.errBox}>
-          <Text style={s.errTitle}>Falha ao carregar</Text>
-          <Text style={s.errText}>{err}</Text>
-          {fallbackMp4 ? <Text style={s.errText}>Teste fallback: {fallbackMp4}</Text> : null}
-        </View>
-      )}
-
-      {/* key=uri força remontagem ao trocar de vídeo */}
-      <VideoView
-        key={uri}
-        style={s.video}
-        player={player}
-        contentFit="cover"
-        allowsFullscreen
-        allowsPictureInPicture
-        // Força HLS no Android quando a URL não termina com .m3u8
-        {...(Platform.OS === "android" && !isHls
-          ? ({ overrideFileExtensionAndroid: "m3u8" } as any)
-          : {})}
-      />
+    <View style={styles.container}>
+      {source ? (
+        <VideoView
+          style={styles.video}
+          player={player}
+          contentFit="cover"
+          allowsFullscreen
+          allowsPictureInPicture
+          // Observação: VideoView não possui prop onError nas typings;
+          // erros vêm por eventos acima quando suportados.
+        />
+      ) : null}
     </View>
   );
 }
 
-const s = StyleSheet.create({
-  box: { width: "100%", aspectRatio: 9 / 16, backgroundColor: "#000", justifyContent: "center", alignItems: "center" },
-  video: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0 },
-  msg: { color: "#fff" },
-  errBox: { padding: 12, alignItems: "center" },
-  errTitle: { color: "#fff", fontWeight: "700", marginBottom: 6 },
-  errText: { color: "#fff", opacity: 0.8, textAlign: "center" },
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: "#000" },
+  video: { width: "100%", height: "100%" },
 });

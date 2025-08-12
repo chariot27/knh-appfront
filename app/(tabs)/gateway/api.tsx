@@ -1,6 +1,6 @@
-// app/gateway/api.tsx
 // Ajustado para React Native: polyfill base64 (sem throw), token persistente, normalização "Bearer ",
-// Authorization automático (exceto login/registro) e preflight opcional no feed READY.
+// Authorization automático (exceto login/registro), preflight opcional no feed READY,
+// suporte a upload com waitSeconds/reprocess e endpoint reprocess manual.
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -39,10 +39,11 @@ export const routes = {
     getPerfil: { path: "/api/users/perfil",    method: "GET"  } as RouteEntry,
   },
   videos: {
-    upload: { path: "/api/videos/upload",     method: "POST" } as RouteEntry,
-    list:   { path: "/api/videos",            method: "GET"  } as RouteEntry,
-    ready:  { path: "/api/videos/ready",      method: "GET"  } as RouteEntry,
-    status: { path: "/api/videos/:id/status", method: "GET"  } as RouteEntry,
+    upload:    { path: "/api/videos/upload",        method: "POST" } as RouteEntry,
+    list:      { path: "/api/videos",               method: "GET"  } as RouteEntry,
+    ready:     { path: "/api/videos/ready",         method: "GET"  } as RouteEntry,
+    status:    { path: "/api/videos/:id/status",    method: "GET"  } as RouteEntry,
+    reprocess: { path: "/api/videos/:id/reprocess", method: "POST" } as RouteEntry,
   }
 } as const;
 
@@ -267,6 +268,30 @@ async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpt
   return parsed as TRes;
 }
 
+/* ====== POST JSON com Bearer ====== */
+async function postJson<TRes>(url: string, body: any, opts: RequestOpts = {}) {
+  const useAuth = opts.auth !== false; // default true
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  if (useAuth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
+
+  const res = await fetchWithTimeout(url, {
+    method: "POST",
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    timeoutMs: opts.timeoutMs ?? 20000,
+  });
+  const text = await res.text().catch(() => "");
+  const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
+  if (!res.ok) {
+    if (res.status === 401 && _authToken) clearAuthToken();
+    throw new Error(typeof parsed === "string" ? parsed : parsed?.message || `HTTP ${res.status}`);
+  }
+  return parsed as TRes;
+}
+
 /* ========== Endpoints de Users ========== */
 export async function registerUser(payload: RegisterPayload, file?: UploadFile) {
   const url = buildUrl(routes.users.register);
@@ -332,7 +357,7 @@ export async function initCurrentUserFromToken(): Promise<User | null> {
   return user;
 }
 
-/* ========== Vídeos (upload + feed READY) ========== */
+/* ========== Vídeos (upload + reprocess + feed READY) ========== */
 export type VideoStatus = "UPLOADED" | "PROCESSING" | "READY" | "FAILED";
 export type VideoDTO = {
   id: string;
@@ -344,7 +369,14 @@ export type VideoDTO = {
   dataUpload?: string | null;
 };
 
-export type UploadVideoInput = { descricao: string; file: UploadFile };
+export type UploadVideoInput = {
+  descricao: string;
+  file: UploadFile;
+  /** segundos para o backend esperar a HLS (0 = não esperar) */
+  waitSeconds?: number;
+  /** forçar reprocess imediatamente após o upload (default true no backend) */
+  reprocess?: boolean;
+};
 
 function guessMime(uri?: string) {
   if (!uri) return "application/octet-stream";
@@ -364,11 +396,16 @@ export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
   if (!userId) {
     try {
       const me = await initCurrentUserFromToken();
-      userId = me?.id ?? null as any;
+      userId = me?.id ?? (null as any);
     } catch { /* ignora */ }
   }
 
-  const url = buildUrl(routes.videos.upload);
+  // Passe os novos parâmetros para o backend
+  const url = buildUrl(routes.videos.upload, undefined, {
+    waitSeconds: input.waitSeconds ?? 0,
+    reprocess: input.reprocess ?? true,
+  });
+
   const form = new FormData();
 
   const data: any = { descricao: input.descricao };
@@ -393,6 +430,12 @@ export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
   }
 }
 
+/** Dispara reprocess no backend e pode pedir para ele esperar alguns segundos pela HLS */
+export async function reprocessVideo(id: string, waitSeconds = 10): Promise<VideoDTO> {
+  const url = buildUrl(routes.videos.reprocess, { id }, { waitSeconds });
+  return postJson<VideoDTO>(url, null, { timeoutMs: 25_000 });
+}
+
 /* ===== Preflight util para HLS (.m3u8) ===== */
 async function preflightUrl(url: string, timeoutMs = 7000): Promise<boolean> {
   try {
@@ -411,7 +454,7 @@ const FEED_CACHE_KEY = "FEED_CACHE_V2";
 const FEED_TTL_MS = 15_000;
 
 /** Busca do endpoint /api/videos/ready.
- *  Por padrão envia Authorization e faz preflight das URLs HLS para evitar 403/503 no player. */
+ *  Por padrão envia Authorization. Preflight é opcional (default true). */
 export async function fetchFeedReady(
   limit = 12,
   opts?: { preflight?: boolean }
@@ -444,3 +487,11 @@ export async function fetchFeedReady(
     throw err;
   }
 }
+
+/* -----------------------------------------------------------------------
+   ⚠️ Se este arquivo estiver dentro de `app/`, o Expo Router tenta tratá-lo
+   como rota e mostra um WARN sobre default export. Ideal é mover para
+   `src/gateway/api.ts` e ajustar imports. Enquanto isso:
+------------------------------------------------------------------------- */
+const __noop = {} as never;
+export default __noop;
