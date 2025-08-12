@@ -488,6 +488,22 @@ export async function fetchFeedReady(
   }
 }
 
+/* ========== Cache do último match (userId do dono do vídeo) ========== */
+const LAST_MATCH_USER_ID_KEY = "LAST_MATCH_USER_ID";
+
+export async function saveLastMatchedUserId(userId: string | null | undefined) {
+  if (!userId) return;
+  try { await AsyncStorage.setItem(LAST_MATCH_USER_ID_KEY, String(userId)); } catch {}
+}
+
+export async function getLastMatchedUserId(): Promise<string | null> {
+  try { return (await AsyncStorage.getItem(LAST_MATCH_USER_ID_KEY)) || null; } catch { return null; }
+}
+
+export async function clearLastMatchedUserId(): Promise<void> {
+  try { await AsyncStorage.removeItem(LAST_MATCH_USER_ID_KEY); } catch {}
+}
+
 /* -----------------------------------------------------------------------
    ⚠️ Se este arquivo estiver dentro de `app/`, o Expo Router tenta tratá-lo
    como rota e mostra um WARN sobre default export. Ideal é mover para

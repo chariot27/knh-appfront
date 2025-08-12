@@ -1,4 +1,3 @@
-// app/gateway/SafeVideo.tsx
 import React, { useEffect, useMemo, useRef } from "react";
 import { View, StyleSheet, Platform } from "react-native";
 import { VideoView, useVideoPlayer, type VideoSource } from "expo-video";
@@ -17,15 +16,14 @@ export default function SafeVideo({ uri, autoPlay = false, fallbackMp4, tag = "S
   const log = (...args: any[]) => console.log(`[${tag}#${id}]`, ...args);
 
   // Decide a fonte: HLS assinado > fallback MP4
-  const source = useMemo<VideoSource | null>(() => {
+  const source = useMemo<VideoSource | undefined>(() => {
     const u = uri || fallbackMp4 || null;
-    const src = u ? { uri: u } : null;
+    const src = u ? { uri: u } : undefined;
     log("source ->", src?.uri ?? null);
     return src;
   }, [uri, fallbackMp4]);
 
-  // Cria o player (loop por padrão).
-  // O hook exige um VideoSource no tipo; usamos cast pra permitir "sem fonte" inicialmente.
+  // Tipagem do hook requer VideoSource; usamos cast e trocamos assim que existir
   const player = useVideoPlayer(source as unknown as VideoSource, (p) => {
     p.loop = true;
   });
@@ -34,10 +32,7 @@ export default function SafeVideo({ uri, autoPlay = false, fallbackMp4, tag = "S
   useEffect(() => {
     log("mounted on", Platform.OS);
     return () => {
-      try {
-        // não chame release() manualmente no expo-video; o hook gerencia
-        log("unmounted");
-      } catch {}
+      log("unmounted");
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -47,7 +42,7 @@ export default function SafeVideo({ uri, autoPlay = false, fallbackMp4, tag = "S
     if (!player) return;
     try {
       if (source) {
-        player.replace(source as VideoSource); // typings: void
+        player.replace(source as VideoSource);
       } else {
         log("player.pause() — no source");
         player.pause();
@@ -76,7 +71,7 @@ export default function SafeVideo({ uri, autoPlay = false, fallbackMp4, tag = "S
     return () => cancelAnimationFrame(idRAF);
   }, [autoPlay, player, source]);
 
-  // Listeners se a API expuser (algumas versões têm .addListener)
+  // Listeners (quando disponíveis)
   useEffect(() => {
     const subs: any[] = [];
     const anyPlayer: any = player as any;
@@ -90,14 +85,13 @@ export default function SafeVideo({ uri, autoPlay = false, fallbackMp4, tag = "S
       }
     };
 
-    // Tente registrar eventos comuns; se não existir, nada acontece
-    add("statusChange");          // status de playback
-    add("playbackStateChange");   // playing/paused/buffering
-    add("sourceChange");          // quando troca a fonte
-    add("timeUpdate");            // posição atual
-    add("durationChange");        // duração
-    add("bufferingChange");       // buffer
-    add("error");                 // erros do player
+    add("statusChange");
+    add("playbackStateChange");
+    add("sourceChange");
+    add("timeUpdate");
+    add("durationChange");
+    add("bufferingChange");
+    add("error");
 
     return () => {
       subs.forEach((s: any) => s?.remove?.());
@@ -113,8 +107,6 @@ export default function SafeVideo({ uri, autoPlay = false, fallbackMp4, tag = "S
           contentFit="cover"
           allowsFullscreen
           allowsPictureInPicture
-          // Observação: VideoView não possui prop onError nas typings;
-          // erros vêm por eventos acima quando suportados.
         />
       ) : null}
     </View>

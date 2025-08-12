@@ -1,5 +1,4 @@
-// app/(tabs)/fixed/dashboard.tsx
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState } from "react";
 import {
   View,
   Text,
@@ -11,22 +10,22 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 
-import PubsScreen from "../pubs";
+import PubsScreen, { type PubsScreenHandle, type Decision } from "../pubs/index";
+import type { VideoDTO } from "../gateway/api";
+import { saveLastMatchedUserId } from "../gateway/api";
+
 import ContatosScreen from "../contatos";
 import AddVideoScreen from "../video";
-import type { PubsScreenHandle, Decision, Pub } from "../pubs";
 import ConvitesScreen from "../convites";
 import PerfilScreen from "../perfil";
 
 const { width } = Dimensions.get("window");
 
-// THEME
-const ACCENT = "#6f63ff";      // roxo (ativo)
-const BG_CARD = "#0c0c0f";     // fundo do card da navbar
-const BG_SCREEN = "#000";      // fundo geral
-const MUTED = "#8a8a8a";       // cinza inativo
+const ACCENT = "#6f63ff";
+const BG_CARD = "#0c0c0f";
+const BG_SCREEN = "#000";
+const MUTED = "#8a8a8a";
 
-// Layout constants
 const NAVBAR_HEIGHT = 72;
 const H_PADDING = 16;
 const BUTTON_GAP = 14;
@@ -36,17 +35,26 @@ const MATCH_PANEL_BOTTOM = 22;
 
 type Tab = "pubs" | "contatos" | "add" | "novidades" | "perfil";
 
+// nome exibido rápido
+function displayName(pub: VideoDTO): string {
+  const n = (pub as any)?.descricao as string | undefined;
+  if (n && n.trim()) return n.trim();
+  const uid = (pub.userId ?? "").toString();
+  return uid ? `user-${uid.slice(0, 8)}` : "sem-nome";
+}
+
+// log com cor
+function logHighlight(label: string) {
+  console.log(`%c${label}`, "color:#00f2ea; font-weight:700");
+  console.log("\x1b[36m%s\x1b[0m", label);
+}
+
 export default function Dashboard() {
   const [tab, setTab] = useState<Tab>("pubs");
   const pubsRef = useRef<PubsScreenHandle>(null);
-  const [currentName, setCurrentName] = useState<string>("");
 
-  // animações dos botões de decisão
   const scaleNope = useRef(new Animated.Value(1)).current;
   const scaleLike = useRef(new Animated.Value(1)).current;
-
-  // name plate (sem animação de aparecer)
-  const nameAnim = useRef(new Animated.Value(1)).current;
 
   function animatePress(anim: Animated.Value) {
     Animated.sequence([
@@ -65,29 +73,18 @@ export default function Dashboard() {
         <View style={s.contentFull}>
           <PubsScreen
             ref={pubsRef}
-            onDecision={(pub: Pub, decision: Decision) => {
+            onDecision={async (pub: VideoDTO, decision: Decision) => {
               console.log("DECISION:", decision, "PUB:", pub.id);
+              if (decision === "like") {
+                await saveLastMatchedUserId(pub.userId);
+                logHighlight(`[MATCH-CACHE] userId salvo: ${pub.userId}`);
+              }
             }}
-            onActive={(pub: Pub) => setCurrentName(pub?.user?.name ?? "")}
+            onActive={(pub: VideoDTO) => {
+              // se quiser mostrar o nome na UI, dá pra atualizar um estado aqui
+              const _ = displayName(pub);
+            }}
           />
-
-          {/* Name plate — sem animação */}
-          {currentName ? (
-            <Animated.View
-              pointerEvents="none"
-              style={[
-                s.namePlate,
-                {
-                  bottom: MATCH_PANEL_BOTTOM + BUTTON_HEIGHT + 10,
-                  opacity: nameAnim,
-                },
-              ]}
-            >
-              <Text style={s.nameText} numberOfLines={1} ellipsizeMode="tail">
-                {currentName}
-              </Text>
-            </Animated.View>
-          ) : null}
 
           {/* Painel de decisão */}
           <View style={s.matchPanel} pointerEvents="box-none">
@@ -121,15 +118,9 @@ export default function Dashboard() {
       );
     }
 
-    if (tab === "contatos") {
-      return <ContatosScreen />;
-    }
-    if (tab === "add") {
-      return <AddVideoScreen />;
-    }
-    if (tab === "novidades") {
-      return <ConvitesScreen />
-    }
+    if (tab === "contatos") return <ContatosScreen />;
+    if (tab === "add") return <AddVideoScreen />;
+    if (tab === "novidades") return <ConvitesScreen />;
     return <PerfilScreen />;
   }
 
@@ -154,7 +145,6 @@ export default function Dashboard() {
   );
 }
 
-/** Ícone puro (sem label e sem animação de aparecer); só troca cor quando ativo */
 function NavIcon({
   icon,
   active,
@@ -180,41 +170,7 @@ function NavIcon({
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: BG_SCREEN },
   body: { flex: 1 },
-
   contentFull: { flex: 1, backgroundColor: BG_SCREEN },
-
-  contentBox: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: "#1b1b1b",
-    borderRadius: 16,
-    backgroundColor: "#0a0a0a",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 16,
-    margin: 16,
-  },
-  contentTxt: { color: "#fff", fontSize: 16 },
-
-  // Name plate
-  namePlate: {
-    position: "absolute",
-    left: 20,
-    right: 20,
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 21,
-  },
-  nameText: {
-    color: "#ddd",
-    fontSize: 13,
-    fontWeight: "600",
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    backgroundColor: "rgba(0,0,0,0.45)",
-    borderRadius: 12,
-    overflow: "hidden",
-  },
 
   // Painel de decisão
   matchPanel: {
@@ -270,22 +226,7 @@ const s = StyleSheet.create({
     shadowOffset: { width: 0, height: 8 },
     elevation: 18,
   },
-
-  navItem: {
-    alignItems: "center",
-    justifyContent: "center",
-    minWidth: 64,
-  },
-  iconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  iconWrapBig: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-  },
+  navItem: { alignItems: "center", justifyContent: "center", minWidth: 64 },
+  iconWrap: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
+  iconWrapBig: { width: 46, height: 46, borderRadius: 23 },
 });

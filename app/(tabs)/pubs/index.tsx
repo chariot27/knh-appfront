@@ -14,13 +14,17 @@ import {
   RefreshControl,
   ActivityIndicator,
   Text,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  InteractionManager,
+  LayoutChangeEvent,
 } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 
 import { fetchFeedReady, VideoDTO } from "../gateway/api";
 import SafeVideo from "../gateway/SafeVideo";
 
-const { height, width } = Dimensions.get("window");
+const { height: WIN_H, width } = Dimensions.get("window");
 const PAGE_SIZE = 12 as const;
 
 export type Decision = "like" | "nope";
@@ -42,24 +46,29 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
   const [viewIndex, setViewIndex] = useState(0);
   const [feedError, setFeedError] = useState<string | null>(null);
 
+  // altura dinâmica do container
+  const [containerH, setContainerH] = useState(WIN_H);
+  const containerHRef = useRef(WIN_H);
+
   const isFocused = useIsFocused();
   const listRef = useRef<FlatList<VideoDTO>>(null);
+  const indexRef = useRef(0);
+
+  const log = (msg: string, extra?: any) => {
+    console.log(`🛸[Pubs] ${msg}`, extra ?? "");
+  };
 
   const loadFirstPage = useCallback(async () => {
     setInitialLoading(true);
     setFeedError(null);
     try {
-      // evita GET extra com Range nas URLs HLS (menos ruído de log)
       const data = await fetchFeedReady(PAGE_SIZE, { preflight: false });
-      console.log("[FEED] itens recebidos:", data.length);
       setItems(data);
-      if (data[0]) onActive?.(data[0]);
+      indexRef.current = 0;
       setViewIndex(0);
-      listRef.current?.scrollToIndex({ index: 0, animated: false });
-
-      if (!data?.length) setFeedError("Nenhum vídeo pronto ainda. Volte em instantes.");
+      if (data[0]) onActive?.(data[0]);
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
     } catch (e: any) {
-      console.log("[FEED] erro carregando:", e);
       setItems([]);
       setFeedError(typeof e?.message === "string" ? e.message : "Falha ao carregar o feed.");
     } finally {
@@ -85,10 +94,81 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
     // Quando o backend suportar paginação, adicionar aqui
   }, [loadingMore]);
 
+  const onLayoutContainer = useCallback((e: LayoutChangeEvent) => {
+    const H = Math.max(1, Math.round(e.nativeEvent.layout.height));
+    if (H && H !== containerHRef.current) {
+      containerHRef.current = H;
+      setContainerH(H);
+      log(`layout -> containerH=${H}`);
+    }
+  }, []);
+
+  const scrollToIdx = useCallback(
+    (idx: number, animated = true) => {
+      if (!listRef.current) return;
+      const clamped = Math.max(0, Math.min(idx, Math.max(0, items.length - 1)));
+      log(`scrollToIndex -> idx=${clamped}`);
+      try {
+        listRef.current.scrollToIndex({
+          index: clamped,
+          animated,
+          viewPosition: 0,
+          viewOffset: 0,
+        });
+      } catch {
+        const H = containerHRef.current || containerH || WIN_H;
+        listRef.current.scrollToOffset({ offset: clamped * H, animated });
+      }
+    },
+    [items, containerH]
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      decide: (decision: Decision) => {
+        const current = items[indexRef.current];
+        if (current) onDecision?.(current, decision);
+
+        const next = indexRef.current + 1;
+        InteractionManager.runAfterInteractions(() => {
+          if (next < items.length) {
+            indexRef.current = next;
+            setViewIndex(next);
+            scrollToIdx(next, true);
+            const nextPub = items[next];
+            if (nextPub) onActive?.(nextPub);
+          } else {
+            // fim da lista — mantém comportamento e tenta carregar mais se existir
+            scrollToIdx(next, true);
+            loadMore();
+          }
+        });
+      },
+    }),
+    [items, onDecision, onActive, scrollToIdx, loadMore]
+  );
+
+  const onMomentumEnd = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const H = containerHRef.current || containerH || WIN_H;
+      const y = e.nativeEvent.contentOffset.y;
+      const idx = Math.round(y / H);
+      if (idx !== indexRef.current) {
+        indexRef.current = idx;
+        setViewIndex(idx);
+        const pub = items[idx];
+        if (pub) onActive?.(pub);
+      }
+    },
+    [items, onActive, containerH]
+  );
+
   const onViewableItemsChanged = useRef(
     ({ viewableItems }: { viewableItems: Array<{ index: number | null }> }) => {
-      if (viewableItems.length === 0) return;
+      if (!viewableItems.length) return;
       const idx = viewableItems[0].index ?? 0;
+      indexRef.current = idx;
       setViewIndex(idx);
       const pub = items[idx];
       if (pub) onActive?.(pub);
@@ -97,30 +177,11 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
 
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 80 }).current;
 
-  useImperativeHandle(ref, () => ({
-    decide: (decision: Decision) => {
-      const current = items[viewIndex];
-      if (!current) return;
-      onDecision?.(current, decision);
-
-      const next = Math.min(viewIndex + 1, items.length - 1);
-      if (next !== viewIndex) {
-        listRef.current?.scrollToIndex({ index: next, animated: true });
-        setViewIndex(next);
-        const nextPub = items[next];
-        if (nextPub) onActive?.(nextPub);
-      } else {
-        loadMore();
-      }
-    },
-  }));
-
   const renderItem = ({ item, index }: { item: VideoDTO; index: number }) => {
     const isActive = index === viewIndex;
     const uri = item?.hlsMasterUrl || null;
-
     return (
-      <View style={s.item}>
+      <View style={[s.item, { height: containerH }]}>
         <SafeVideo
           uri={uri}
           autoPlay={isFocused && isActive}
@@ -132,14 +193,14 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
 
   if (initialLoading) {
     return (
-      <View style={[s.screen, s.center]}>
+      <View style={[s.screen, s.center]} onLayout={onLayoutContainer}>
         <ActivityIndicator size="large" color="#00f2ea" />
       </View>
     );
   }
 
   return (
-    <View style={s.screen}>
+    <View style={s.screen} onLayout={onLayoutContainer}>
       {!!feedError && (
         <View style={s.banner}>
           <Text style={s.bannerTxt}>{feedError}</Text>
@@ -152,20 +213,25 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         pagingEnabled
-        showsVerticalScrollIndicator={false}
-        snapToAlignment="start"
         decelerationRate="fast"
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
+        onMomentumScrollEnd={onMomentumEnd}
         onEndReached={loadMore}
         onEndReachedThreshold={0.6}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
-        getItemLayout={(_, index) => ({ length: height, offset: height * index, index })}
+        getItemLayout={(_, index) => ({ length: containerH, offset: containerH * index, index })}
         windowSize={3}
         initialNumToRender={3}
         maxToRenderPerBatch={3}
+        removeClippedSubviews={false}
+        onScrollToIndexFailed={({ index }) => {
+          const retry = Math.max(0, Math.min(index, items.length - 1));
+          setTimeout(() => scrollToIdx(retry, true), 60);
+        }}
         ListEmptyComponent={
-          <View style={[s.item, s.center]}>
+          <View style={[s.item, s.center, { height: containerH }]}>
             <Text style={{ color: "#aaa" }}>Nenhum vídeo para exibir.</Text>
           </View>
         }
@@ -184,7 +250,7 @@ export default PubsScreen;
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000" },
-  item: { width, height, backgroundColor: "#000" },
+  item: { width, backgroundColor: "#000" }, // altura vem do container
   center: { alignItems: "center", justifyContent: "center" },
   banner: {
     position: "absolute",

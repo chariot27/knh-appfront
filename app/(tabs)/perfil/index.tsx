@@ -161,10 +161,6 @@ export default function Perfil() {
         </View>
 
         {/* Botões */}
-        <TouchableOpacity style={s.button}>
-          <Text style={s.buttonText}>Trocar senha</Text>
-        </TouchableOpacity>
-
         <TouchableOpacity style={[s.button, s.subscribeButton]}>
           <Text style={s.buttonText}>Assinar Streaming</Text>
         </TouchableOpacity>
