@@ -1,4 +1,29 @@
+// app/gateway/api.tsx
+// Ajustado para React Native: polyfill base64 (sem throw), token persistente, normalização "Bearer ",
+// Authorization automático (exceto login/registro) e preflight opcional no feed READY.
+
 import AsyncStorage from "@react-native-async-storage/async-storage";
+
+/* =================== Polyfill base64 para RN (require dinâmico SAFE) =================== */
+let __b64decode: ((s: string) => string) | undefined;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mod = require("base-64");
+  __b64decode = mod?.decode;
+} catch {
+  __b64decode = undefined;
+}
+
+if (typeof globalThis.atob === "undefined") {
+  if (__b64decode) {
+    // @ts-ignore
+    globalThis.atob = __b64decode;
+  } else {
+    // não derrube o app se faltar o polyfill
+    // eslint-disable-next-line no-console
+    console.warn("[api.tsx] 'atob' ausente e pacote 'base-64' não instalado. JWT não será decodificado.");
+  }
+}
 
 /* ========== Base/rotas/helpers ========== */
 export const BASE_URL = "https://gateway-service-civz.onrender.com" as const;
@@ -14,9 +39,10 @@ export const routes = {
     getPerfil: { path: "/api/users/perfil",    method: "GET"  } as RouteEntry,
   },
   videos: {
-    upload: { path: "/api/videos/upload",       method: "POST" } as RouteEntry,
-    list:   { path: "/api/videos",              method: "GET"  } as RouteEntry,
-    status: { path: "/api/videos/:id/status",   method: "GET"  } as RouteEntry,
+    upload: { path: "/api/videos/upload",     method: "POST" } as RouteEntry,
+    list:   { path: "/api/videos",            method: "GET"  } as RouteEntry,
+    ready:  { path: "/api/videos/ready",      method: "GET"  } as RouteEntry,
+    status: { path: "/api/videos/:id/status", method: "GET"  } as RouteEntry,
   }
 } as const;
 
@@ -48,6 +74,7 @@ export function getRouteMethod(entry: RouteEntry | string): HttpMethod {
 
 /* ========== Auth token & user cache ========== */
 let _authToken: string | null = null;
+const AUTH_KEY = "AUTH_TOKEN";
 
 export type PerfilResponse = {
   nome: string;
@@ -78,11 +105,47 @@ type PerfilCacheEntry = { data: PerfilResponse; ts: number };
 const _perfilCache = new Map<string, PerfilCacheEntry>();
 const PERFIL_CACHE_TTL_MS = 5 * 60 * 1000;
 
-export function setAuthToken(token: string | null) { _authToken = token; }
+/* ===== Helpers de token ===== */
+function normalizeToken(t?: string | null) {
+  if (!t) return null;
+  let v = t.trim();
+  if (v.toLowerCase().startsWith("bearer ")) v = v.slice(7).trim();
+  return v || null;
+}
+
+export function setAuthToken(token: string | null) { _authToken = normalizeToken(token); }
 export function getAuthToken() { return _authToken; }
-export function clearAuthToken() { _authToken = null; _currentUser = null; _perfilCache.clear(); }
+export function clearAuthToken() {
+  _authToken = null;
+  _currentUser = null;
+  _perfilCache.clear();
+  // fire-and-forget: remove do storage também
+  AsyncStorage.removeItem(AUTH_KEY).catch(() => {});
+}
 export function setCurrentUser(u: (PerfilResponse | User) | null) { _currentUser = u; }
 export function getCurrentUser() { return _currentUser; }
+
+export async function persistAuthToken(token: string | null) {
+  _authToken = normalizeToken(token);
+  if (_authToken) {
+    await AsyncStorage.setItem(AUTH_KEY, _authToken);
+  } else {
+    await AsyncStorage.removeItem(AUTH_KEY);
+  }
+}
+
+export async function restoreAuthToken() {
+  const t = await AsyncStorage.getItem(AUTH_KEY);
+  _authToken = normalizeToken(t);
+  return _authToken;
+}
+
+export async function initAuthOnBoot() {
+  await restoreAuthToken();
+  try {
+    if (_authToken) await initCurrentUserFromToken();
+  } catch { /* opcionalmente logar */ }
+}
 
 /* ========== Tipos de payloads ========== */
 export type RegisterPayload = {
@@ -108,6 +171,7 @@ export type LoginResponse = { token: string };
 type RequestOpts = {
   timeoutMs?: number;
   retries?: number;
+  /** quando omitido, assume true (use Bearer) */
   auth?: boolean;
 };
 
@@ -127,33 +191,44 @@ async function fetchWithTimeout(
   }
 }
 
+// seguro mesmo se não houver atob
 function b64urlToString(b64url: string) {
   const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/")
     + "=".repeat((4 - (b64url.length % 4)) % 4);
-  if (typeof atob === "function") return decodeURIComponent(escape(atob(b64)));
-  // @ts-ignore
-  const buf = typeof Buffer !== "undefined" ? Buffer.from(b64, "base64") : null;
-  return buf ? buf.toString("utf8") : "";
+  if (typeof atob !== "function") return "";
+  try {
+    const raw = atob(b64);
+    // eslint-disable-next-line deprecation/deprecation
+    return decodeURIComponent(escape(raw));
+  } catch {
+    return "";
+  }
 }
 
+/** Lê o userId (sub/userId/id) do payload do JWT atual */
 export function getUserIdFromToken(): string | null {
-  if (!_authToken) return null;
-  const parts = _authToken.split(".");
+  const raw = normalizeToken(_authToken);
+  if (!raw) return null;
+  const parts = raw.split(".");
   if (parts.length < 2) return null;
   try {
     const payloadStr = b64urlToString(parts[1]);
     const payload = JSON.parse(payloadStr || "{}");
     return payload.sub || payload.userId || payload.id || null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
+/** GET JSON com Bearer por padrão (auth=true) */
 async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes> {
   const attemptMax = Math.max(1, opts.retries ?? 1);
+  const useAuth = opts.auth !== false; // default true
   let lastErr: any = null;
   for (let attempt = 1; attempt <= attemptMax; attempt++) {
     try {
       const headers: Record<string, string> = { Accept: "application/json" };
-      if (opts.auth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
+      if (useAuth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
       const res = await fetchWithTimeout(url, { method: "GET", headers, timeoutMs: opts.timeoutMs ?? 20000 });
       const text = await res.text().catch(() => "");
       const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
@@ -171,11 +246,11 @@ async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes>
   throw lastErr ?? new Error("Falha desconhecida");
 }
 
-/* ====== Multipart helper ====== */
+/* ====== Multipart helper (POST) — Bearer por padrão ====== */
 async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpts = {}) {
-  // Importante: não setar Content-Type manualmente; RN define o boundary
+  const useAuth = opts.auth !== false; // default true
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (opts.auth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
+  if (useAuth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
 
   const res = await fetchWithTimeout(url, {
     method: "POST",
@@ -204,25 +279,33 @@ export async function registerUser(payload: RegisterPayload, file?: UploadFile) 
       type: file.type || "application/octet-stream",
     } as any);
   }
-  return postMultipart<any>(url, form, { timeoutMs: 25000, retries: 2 });
+  // registro NÃO envia Authorization
+  return postMultipart<any>(url, form, { timeoutMs: 25000, retries: 2, auth: false });
 }
 
 export async function loginUser(payload: LoginPayload): Promise<LoginResponse> {
   const url = buildUrl(routes.users.login);
   const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+  // login NÃO envia Authorization
   const res = await fetchWithTimeout(url, { method: "POST", headers, body: JSON.stringify(payload), timeoutMs: 20000 });
   const text = await res.text().catch(() => "");
   const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
   if (!res.ok) throw new Error(typeof parsed === "string" ? parsed : parsed?.message || `HTTP ${res.status}`);
-  const token = typeof parsed === "string" ? parsed : parsed?.token;
+
+  const tokenRaw = typeof parsed === "string" ? parsed : parsed?.token;
+  const token = normalizeToken(tokenRaw);
   if (!token) throw new Error("Resposta de login inválida");
+
   setAuthToken(token);
+  await persistAuthToken(token);
+
   return { token };
 }
 
 export async function getUserById(id: string) {
   const url = buildUrl(routes.users.getById, { id });
-  return getJson<User>(url, { auth: true, timeoutMs: 15000, retries: 1 });
+  // auth=true por padrão
+  return getJson<User>(url, { timeoutMs: 15000, retries: 1 });
 }
 
 export async function getPerfilByEmail(email: string): Promise<PerfilResponse> {
@@ -234,7 +317,8 @@ export async function getPerfilByEmail(email: string): Promise<PerfilResponse> {
     return cached.data;
   }
   const url = buildUrl(routes.users.getPerfil, undefined, { email: key });
-  const perfil = await getJson<PerfilResponse>(url, { auth: true, timeoutMs: 15000, retries: 1 });
+  // auth=true por padrão
+  const perfil = await getJson<PerfilResponse>(url, { timeoutMs: 15000, retries: 1 });
   _perfilCache.set(key, { data: perfil, ts: now });
   setCurrentUser(perfil);
   return perfil;
@@ -254,7 +338,7 @@ export type VideoDTO = {
   id: string;
   userId: string;
   descricao?: string | null;
-  hlsMasterUrl: string | null;   // CDN HLS .m3u8
+  hlsMasterUrl: string | null;   // CDN HLS .m3u8 (ideal: já assinada pelo backend)
   streamVideoId?: string | null;
   status: VideoStatus;
   dataUpload?: string | null;
@@ -271,23 +355,35 @@ function guessMime(uri?: string) {
   return "video/mp4";
 }
 
-const UPLOAD_TIMEOUT_MS = 5 * 60_000; // 5 min pra uploads mais parrudos
+const UPLOAD_TIMEOUT_MS = 5 * 60_000;
 
 export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
-  const userId = getUserIdFromToken();
-  if (!userId) throw new Error("Faça login para publicar.");
+  // Tenta extrair o userId do JWT; se falhar, tenta carregar do backend; se ainda falhar, prossegue sem
+  let userId = getUserIdFromToken();
+
+  if (!userId) {
+    try {
+      const me = await initCurrentUserFromToken();
+      userId = me?.id ?? null as any;
+    } catch { /* ignora */ }
+  }
 
   const url = buildUrl(routes.videos.upload);
   const form = new FormData();
-  form.append("data", JSON.stringify({ userId, descricao: input.descricao }) as any);
+
+  const data: any = { descricao: input.descricao };
+  if (userId) data.userId = userId; // backend pode inferir pelo JWT se ausente
+  form.append("data", JSON.stringify(data) as any);
+
   form.append("file", {
     uri: input.file.uri,
     name: input.file.name || "video.mp4",
     type: input.file.type || guessMime(input.file.uri),
   } as any);
 
+  // auth=true por padrão
   try {
-    return await postMultipart<VideoDTO>(url, form, { auth: true, timeoutMs: UPLOAD_TIMEOUT_MS, retries: 0 });
+    return await postMultipart<VideoDTO>(url, form, { timeoutMs: UPLOAD_TIMEOUT_MS, retries: 0 });
   } catch (e: any) {
     const msg = (e?.message || "").toLowerCase();
     if (msg.includes("network request failed") || msg.includes("abort") || msg.includes("networkerror")) {
@@ -297,14 +393,44 @@ export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
   }
 }
 
-const FEED_CACHE_KEY = "FEED_CACHE_V1";
+/* ===== Preflight util para HLS (.m3u8) ===== */
+async function preflightUrl(url: string, timeoutMs = 7000): Promise<boolean> {
+  try {
+    const ctrl = new AbortController();
+    const id = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(url, { method: "GET", headers: { Range: "bytes=0-1" }, signal: ctrl.signal as any });
+    clearTimeout(id);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/* cache do feed prontos (READY) */
+const FEED_CACHE_KEY = "FEED_CACHE_V2";
 const FEED_TTL_MS = 15_000;
 
-export async function fetchFeedReady(): Promise<VideoDTO[]> {
-  const url = buildUrl(routes.videos.list);
+/** Busca do endpoint /api/videos/ready.
+ *  Por padrão envia Authorization e faz preflight das URLs HLS para evitar 403/503 no player. */
+export async function fetchFeedReady(
+  limit = 12,
+  opts?: { preflight?: boolean }
+): Promise<VideoDTO[]> {
+  const url = buildUrl(routes.videos.ready, undefined, { limit });
   try {
-    const list = await getJson<VideoDTO[]>(url, { auth: true, timeoutMs: 15_000, retries: 1 });
-    const ready = (list || []).filter(v => v.status === "READY" && !!v.hlsMasterUrl);
+    // auth=true por padrão
+    const list = await getJson<VideoDTO[]>(url, { timeoutMs: 15_000, retries: 1 });
+    let ready = (list || []).filter(v => typeof v.hlsMasterUrl === "string" && !!v.hlsMasterUrl);
+
+    const doPreflight = opts?.preflight !== false; // default true
+    if (doPreflight && ready.length) {
+      // valida em paralelo (limite simples)
+      const checks = await Promise.all(
+        ready.map(async (v) => ({ v, ok: await preflightUrl(v.hlsMasterUrl as string, 7000) }))
+      );
+      ready = checks.filter(c => c.ok).map(c => c.v);
+    }
+
     try { await AsyncStorage.setItem(FEED_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: ready })); } catch {}
     return ready;
   } catch (err) {

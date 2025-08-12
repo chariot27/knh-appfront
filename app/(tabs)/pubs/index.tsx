@@ -14,20 +14,19 @@ import {
   Dimensions,
   RefreshControl,
   ActivityIndicator,
+  Text,
 } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
-import { Video, ResizeMode, Audio } from "expo-av";
+import { Audio } from "expo-av";
 
-// ⛓️ API
-import { fetchFeedReady, VideoDTO } from "../gateway/api"; // <- ajuste o path
+import { fetchFeedReady, VideoDTO } from "../gateway/api";
+import SafeVideo from "../gateway/SafeVideo";
 
 const { height, width } = Dimensions.get("window");
+const PAGE_SIZE = 12 as const;
 
 export type Decision = "like" | "nope";
-
-export type PubsScreenHandle = {
-  decide: (decision: Decision) => void;
-};
+export type PubsScreenHandle = { decide: (decision: Decision) => void };
 
 export type Props = {
   onDecision?: (pub: VideoDTO, decision: Decision) => void;
@@ -40,36 +39,52 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
 ) {
   const [items, setItems] = useState<VideoDTO[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false); // reservado se paginar depois
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [viewIndex, setViewIndex] = useState(0);
+  const [feedError, setFeedError] = useState<string | null>(null);
 
   const isFocused = useIsFocused();
   const listRef = useRef<FlatList<VideoDTO>>(null);
 
-  // 🔊 áudio Android
   useEffect(() => {
     (async () => {
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        staysActiveInBackground: false,
-        shouldDuckAndroid: true,
-      });
+      try {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          staysActiveInBackground: false,
+          shouldDuckAndroid: true,
+          playsInSilentModeIOS: true,
+        });
+      } catch (e) {
+        console.log("[AUDIO] setAudioModeAsync error:", e);
+      }
     })();
   }, []);
 
   const loadFirstPage = useCallback(async () => {
-    const data = await fetchFeedReady(); // já filtra READY + cache leve
-    setItems(data);
-    if (data[0]) onActive?.(data[0]);
-    setViewIndex(0);
-    listRef.current?.scrollToIndex({ index: 0, animated: false });
+    setInitialLoading(true);
+    setFeedError(null);
+    try {
+      const data = await fetchFeedReady(PAGE_SIZE);
+      console.log("[FEED] itens recebidos:", data.length);
+      setItems(data);
+      if (data[0]) onActive?.(data[0]);
+      setViewIndex(0);
+      listRef.current?.scrollToIndex({ index: 0, animated: false });
+
+      if (!data?.length) setFeedError("Nenhum vídeo pronto ainda. Volte em instantes.");
+    } catch (e: any) {
+      console.log("[FEED] erro carregando:", e);
+      setItems([]);
+      setFeedError(typeof e?.message === "string" ? e.message : "Falha ao carregar o feed.");
+    } finally {
+      setInitialLoading(false);
+    }
   }, [onActive]);
 
-  // recarrega ao focar
   useEffect(() => {
-    if (isFocused) {
-      loadFirstPage().catch(() => {});
-    }
+    if (isFocused) loadFirstPage().catch(() => {});
   }, [isFocused, loadFirstPage]);
 
   const onRefresh = useCallback(async () => {
@@ -81,10 +96,9 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
     }
   }, [loadFirstPage]);
 
-  // placeholder se/quando houver backend paginado
   const loadMore = useCallback(async () => {
     if (loadingMore) return;
-    // se seu backend tiver paginação, plugue aqui
+    // plugue paginação aqui quando o backend suportar
   }, [loadingMore]);
 
   const onViewableItemsChanged = useRef(
@@ -119,27 +133,35 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
 
   const renderItem = ({ item, index }: { item: VideoDTO; index: number }) => {
     const isActive = index === viewIndex;
-    // só renderiza se tiver HLS
-    const uri = item.hlsMasterUrl || "";
+    const uri = item?.hlsMasterUrl || null;
+
     return (
       <View style={s.item}>
-        <Video
-          style={s.video}
-          source={{ uri }}
-          resizeMode={ResizeMode.COVER}
-          useNativeControls={false}
-          shouldPlay={isFocused && isActive}
-          isLooping
-          isMuted={!isActive}
-          volume={isActive ? 1.0 : 0.0}
-          onError={(e) => console.log("Erro no vídeo:", e)}
+        <SafeVideo
+          uri={uri}
+          autoPlay={isFocused && isActive}
+          fallbackMp4="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
         />
       </View>
     );
   };
 
+  if (initialLoading) {
+    return (
+      <View style={[s.screen, s.center]}>
+        <ActivityIndicator size="large" color="#00f2ea" />
+      </View>
+    );
+  }
+
   return (
     <View style={s.screen}>
+      {!!feedError && (
+        <View style={s.banner}>
+          <Text style={s.bannerTxt}>{feedError}</Text>
+        </View>
+      )}
+
       <FlatList
         ref={listRef}
         data={items}
@@ -151,14 +173,18 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
         decelerationRate="fast"
         onEndReached={loadMore}
         onEndReachedThreshold={0.6}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
         getItemLayout={(_, index) => ({ length: height, offset: height * index, index })}
-        removeClippedSubviews
         windowSize={3}
+        initialNumToRender={3}
+        maxToRenderPerBatch={3}
+        ListEmptyComponent={
+          <View style={[s.item, s.center]}>
+            <Text style={{ color: "#aaa" }}>Nenhum vídeo para exibir.</Text>
+          </View>
+        }
       />
 
       {loadingMore && (
@@ -175,7 +201,19 @@ export default PubsScreen;
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000" },
   item: { width, height, backgroundColor: "#000" },
-  video: { width: "100%", height: "100%" },
+  center: { alignItems: "center", justifyContent: "center" },
+  banner: {
+    position: "absolute",
+    top: 40,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+    alignSelf: "center",
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(0,0,0,0.6)",
+  },
+  bannerTxt: { color: "#fff", textAlign: "center" },
   loadingMore: {
     position: "absolute",
     bottom: 80,
