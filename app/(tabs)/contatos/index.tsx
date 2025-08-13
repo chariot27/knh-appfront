@@ -1,6 +1,5 @@
-// app/(tabs)/contatos/index.tsx
 // Requer: expo-clipboard (expo install expo-clipboard)
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -17,6 +16,15 @@ import {
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { Feather } from "@expo/vector-icons";
+import {
+  getUserIdFromToken,
+  initCurrentUserFromToken,
+  listMyMatches,
+  listInvitesSent,
+  listInvitesReceived,
+  getUserById,
+  InviteStatus,
+} from "../gateway/api";
 
 const { width } = Dimensions.get("window");
 const GUTTER = 14;
@@ -29,32 +37,13 @@ const BOTTOM_INSET = NAVBAR_HEIGHT + 20;
 export type MatchStatus = "mutuo" | "pendente";
 
 export type ContactItem = {
-  id: string;
+  id: string;           // prefixado p_/m_ para não colidir
+  userId: string;       // id do contato (não o seu)
   name: string;
-  phone: string;
+  phone: string;        // vazio quando pendente
   avatarUrl: string;
   status: MatchStatus;
 };
-
-// ---- MOCK: gera bastante gente pra rolar a lista ----
-function makeMock(total = 40): ContactItem[] {
-  const out: ContactItem[] = [];
-  for (let i = 1; i <= total; i++) {
-    out.push({
-      id: String(i),
-      name:
-        ["Alice", "Bruno", "Carla", "Diego", "Eva", "Felipe"][i % 6] +
-        " " +
-        (100 + i),
-      phone: `+55 ${String(10 + (i % 19)).padStart(2, "0")} 9${String(
-        1000 + (i % 9000)
-      ).padStart(4, "0")}-${String(1000 + (i % 9000)).padStart(4, "0")}`,
-      avatarUrl: `https://i.pravatar.cc/200?img=${(i % 70) + 1}`,
-      status: i % 3 === 0 ? "pendente" : "mutuo",
-    });
-  }
-  return out;
-}
 
 // normaliza para busca (remove acentos e caixa)
 function norm(txt: string) {
@@ -67,20 +56,124 @@ function norm(txt: string) {
 }
 
 export default function ContatosScreen() {
-  const [data, setData] = useState<ContactItem[]>(() => makeMock(40));
+  const [data, setData] = useState<ContactItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
 
-  const onRefresh = useCallback(async () => {
+  const toast = (msg: string) => {
+    if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.SHORT);
+    else Alert.alert(msg);
+  };
+
+  const load = useCallback(async () => {
     setRefreshing(true);
     try {
-      // TODO: trocar por fetch da sua API
-      await new Promise((r) => setTimeout(r, 600));
-      setData(makeMock(40));
+      // descobre meu userId
+      let meId = getUserIdFromToken();
+      if (!meId) {
+        const me = await initCurrentUserFromToken().catch(() => null);
+        // @ts-ignore
+        meId = me?.id || null;
+      }
+      if (!meId) throw new Error("Usuário não autenticado.");
+
+      // 1) matches mútuos
+      const matches = await listMyMatches(meId);
+
+      // 2) convites enviados pendentes (telefone oculto)
+      const pendings = await listInvitesSent(meId, "PENDING" as InviteStatus);
+
+      // 3) convites RECEBIDOS ACCEPTED (trazem dados do outro lado)
+      const acceptedFromOthers = await listInvitesReceived(meId, "ACCEPTED" as InviteStatus);
+      const acceptedMap = new Map<string, {name?: string; phone?: string; avatar?: string}>();
+      acceptedFromOthers.forEach(inv => {
+        acceptedMap.set(inv.inviterId, {
+          name: inv.inviterName,
+          phone: inv.inviterPhone,
+          avatar: inv.inviterAvatar
+        });
+      });
+
+      // cache simples p/ evitar múltiplos GET /users/:id
+      const userCache = new Map<string, any>();
+      async function fetchUser(uid: string) {
+        if (userCache.has(uid)) return userCache.get(uid);
+        const u = await getUserById(uid).catch(() => null);
+        userCache.set(uid, u);
+        return u;
+      }
+
+      // transforma matches mútuos em cards com telefone visível
+      const mutuos: ContactItem[] = await Promise.all(
+        matches.map(async (m) => {
+          const otherId = m.userA === meId ? m.userB : m.userA;
+
+          // prioriza dados do convite ACCEPTED recebido (do "outro")
+          const fromInvite = acceptedMap.get(otherId);
+
+          // depois tenta buscar no serviço de usuários
+          const u = await fetchUser(otherId);
+
+          const name =
+            fromInvite?.name ||
+            u?.nome ||
+            `Usuário ${otherId.slice(0, 6)}`;
+
+          const phone =
+            fromInvite?.phone ||
+            u?.telefone ||
+            "";
+
+          const avatarUrl =
+            fromInvite?.avatar ||
+            u?.avatarUrl ||
+            `https://i.pravatar.cc/200?u=${encodeURIComponent(otherId)}`;
+
+          return {
+            id: `m_${m.id}`,
+            userId: otherId,
+            name,
+            phone,
+            avatarUrl,
+            status: "mutuo",
+          } as ContactItem;
+        })
+      );
+
+      // transforma convites ENVIADOS pendentes (telefone oculto)
+      const pend: ContactItem[] = await Promise.all(
+        pendings.map(async (inv) => {
+          const otherId = inv.targetId;
+          const u = await fetchUser(otherId);
+          const name = u?.nome || `Usuário ${otherId.slice(0, 6)}`;
+          const avatarUrl =
+            u?.avatarUrl ||
+            `https://i.pravatar.cc/200?u=${encodeURIComponent(otherId)}`;
+
+          return {
+            id: `p_${inv.id}`,
+            userId: otherId,
+            name,
+            phone: "",
+            avatarUrl,
+            status: "pendente",
+          } as ContactItem;
+        })
+      );
+
+      setData([...mutuos, ...pend]);
+    } catch (e: any) {
+      toast(e?.message || "Falha ao carregar contatos.");
     } finally {
       setRefreshing(false);
     }
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const onRefresh = useCallback(load, [load]);
 
   const onCopyPhone = useCallback(async (phone: string) => {
     try {
@@ -139,7 +232,7 @@ export default function ContatosScreen() {
             {isMutuo ? (
               <>
                 <Feather name="phone" size={14} />
-                <Text style={s.phoneText}>{item.phone}</Text>
+                <Text style={s.phoneText}>{item.phone || "Sem telefone"}</Text>
               </>
             ) : (
               <>
@@ -171,7 +264,6 @@ export default function ContatosScreen() {
           onChangeText={setQuery}
           style={s.searchInput}
           returnKeyType="search"
-          // garante que editar não feche o teclado
           blurOnSubmit={false}
         />
         {query.length > 0 && (
@@ -196,7 +288,7 @@ export default function ContatosScreen() {
           <View style={s.empty}>
             <Feather name="users" size={20} color="#666" />
             <Text style={s.emptyTxt}>
-              Nenhum contato encontrado para “{query}”.
+              {query ? `Nenhum contato para “${query}”.` : "Sem contatos ainda."}
             </Text>
           </View>
         }
@@ -229,7 +321,7 @@ const s = StyleSheet.create({
     borderColor: "#161616",
     backgroundColor: "#0c0c0c",
     marginHorizontal: GUTTER,
-    marginTop: 60,      // ⇦ empurra mais para baixo
+    marginTop: 60,
     marginBottom: 12,
   },
   searchInput: {
@@ -238,10 +330,7 @@ const s = StyleSheet.create({
     fontSize: 14,
     paddingVertical: 4,
   },
-  clearBtn: {
-    padding: 2,
-    borderRadius: 8,
-  },
+  clearBtn: { padding: 2, borderRadius: 8 },
 
   row: { gap: GUTTER, marginBottom: GUTTER },
   card: {

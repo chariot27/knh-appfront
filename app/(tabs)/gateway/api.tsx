@@ -1,7 +1,3 @@
-// Ajustado para React Native: polyfill base64 (sem throw), token persistente, normalização "Bearer ",
-// Authorization automático (exceto login/registro), preflight opcional no feed READY,
-// suporte a upload com waitSeconds/reprocess e endpoint reprocess manual.
-
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 /* =================== Polyfill base64 para RN (require dinâmico SAFE) =================== */
@@ -19,7 +15,6 @@ if (typeof globalThis.atob === "undefined") {
     // @ts-ignore
     globalThis.atob = __b64decode;
   } else {
-    // não derrube o app se faltar o polyfill
     // eslint-disable-next-line no-console
     console.warn("[api.tsx] 'atob' ausente e pacote 'base-64' não instalado. JWT não será decodificado.");
   }
@@ -44,6 +39,13 @@ export const routes = {
     ready:     { path: "/api/videos/ready",         method: "GET"  } as RouteEntry,
     status:    { path: "/api/videos/:id/status",    method: "GET"  } as RouteEntry,
     reprocess: { path: "/api/videos/:id/reprocess", method: "POST" } as RouteEntry,
+  },
+  matches: {
+    invite:           { path: "/api/matches/invite",            method: "POST" } as RouteEntry,
+    accept:           { path: "/api/matches/accept",            method: "POST" } as RouteEntry,
+    listForUser:      { path: "/api/matches/user/:userId",      method: "GET"  } as RouteEntry,
+    sentInvites:      { path: "/api/matches/invites/sent",      method: "GET"  } as RouteEntry,
+    receivedInvites:  { path: "/api/matches/invites/received",  method: "GET"  } as RouteEntry,
   }
 } as const;
 
@@ -71,6 +73,33 @@ export function buildUrl(
 
 export function getRouteMethod(entry: RouteEntry | string): HttpMethod {
   return typeof entry === "string" ? "GET" : entry.method;
+}
+
+/* ========== DEBUG HTTP (logs completos) ========== */
+const DEBUG_HTTP = true;
+let __reqSeq = 0;
+function nextReqId(prefix: string) {
+  __reqSeq = (__reqSeq + 1) % 1_000_000;
+  return `${prefix}-${Date.now()}-${__reqSeq}`;
+}
+function redactHeaders(h?: Record<string, any>) {
+  if (!h) return h;
+  const out: Record<string, any> = { ...h };
+  const k = Object.keys(out).find(x => x.toLowerCase() === "authorization");
+  if (k && typeof out[k] === "string") out[k] = "Bearer ****";
+  return out;
+}
+function toPrintableBody(body: any) {
+  try { return typeof body === "string" ? body : JSON.stringify(body); } catch { return String(body); }
+}
+function logHttp(tag: "REQ" | "RES" | "ERR", payload: any) {
+  if (!DEBUG_HTTP) return;
+  try {
+    const safe = JSON.stringify(payload, null, 2);
+    console.log(`[HTTP][${tag}]`, safe);
+  } catch {
+    console.log(`[HTTP][${tag}]`, payload);
+  }
 }
 
 /* ========== Auth token & user cache ========== */
@@ -120,7 +149,6 @@ export function clearAuthToken() {
   _authToken = null;
   _currentUser = null;
   _perfilCache.clear();
-  // fire-and-forget: remove do storage também
   AsyncStorage.removeItem(AUTH_KEY).catch(() => {});
 }
 export function setCurrentUser(u: (PerfilResponse | User) | null) { _currentUser = u; }
@@ -148,7 +176,7 @@ export async function initAuthOnBoot() {
   } catch { /* opcionalmente logar */ }
 }
 
-/* ========== Tipos de payloads ========== */
+/* ========== Tipos de payloads gerais ========== */
 export type RegisterPayload = {
   nome: string;
   email: string;
@@ -226,20 +254,31 @@ async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes>
   const attemptMax = Math.max(1, opts.retries ?? 1);
   const useAuth = opts.auth !== false; // default true
   let lastErr: any = null;
+
   for (let attempt = 1; attempt <= attemptMax; attempt++) {
+    const reqId = nextReqId("GET");
+    const t0 = Date.now();
     try {
       const headers: Record<string, string> = { Accept: "application/json" };
       if (useAuth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
+
+      logHttp("REQ", { reqId, method: "GET", url, headers: redactHeaders(headers) });
+
       const res = await fetchWithTimeout(url, { method: "GET", headers, timeoutMs: opts.timeoutMs ?? 20000 });
       const text = await res.text().catch(() => "");
+      logHttp("RES", { reqId, url, status: res.status, ms: Date.now() - t0, body: text?.slice(0, 8000) });
+
       const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
       if (!res.ok) {
         if (res.status === 401 && _authToken) clearAuthToken();
-        throw new Error(typeof parsed === "string" ? parsed : parsed?.message || `HTTP ${res.status}`);
+        const err = new Error(typeof parsed === "string" ? parsed : parsed?.message || `HTTP ${res.status}`);
+        (err as any).status = res.status;
+        throw err;
       }
       return parsed as TRes;
-    } catch (err) {
+    } catch (err: any) {
       lastErr = err;
+      logHttp("ERR", { reqId, url, msg: err?.message || String(err), stack: err?.stack, attempt, ms: Date.now() - t0 });
       if (attempt >= attemptMax) break;
       await new Promise(r => setTimeout(r, 1000));
     }
@@ -249,27 +288,42 @@ async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes>
 
 /* ====== Multipart helper (POST) — Bearer por padrão ====== */
 async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpts = {}) {
+  const reqId = nextReqId("POST-MULTI");
+  const t0 = Date.now();
   const useAuth = opts.auth !== false; // default true
   const headers: Record<string, string> = { Accept: "application/json" };
   if (useAuth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
 
-  const res = await fetchWithTimeout(url, {
-    method: "POST",
-    headers,
-    body: form,
-    timeoutMs: opts.timeoutMs ?? 25000,
-  });
-  const text = await res.text().catch(() => "");
-  const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
-  if (!res.ok) {
-    if (res.status === 401 && _authToken) clearAuthToken();
-    throw new Error(typeof parsed === "string" ? parsed : parsed?.message || `HTTP ${res.status}`);
+  logHttp("REQ", { reqId, method: "POST", url, headers: redactHeaders(headers), body: "<FormData>" });
+
+  try {
+    const res = await fetchWithTimeout(url, {
+      method: "POST",
+      headers,
+      body: form,
+      timeoutMs: opts.timeoutMs ?? 25000,
+    });
+    const text = await res.text().catch(() => "");
+    logHttp("RES", { reqId, url, status: res.status, ms: Date.now() - t0, body: text?.slice(0, 8000) });
+
+    const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
+    if (!res.ok) {
+      if (res.status === 401 && _authToken) clearAuthToken();
+      const err = new Error(typeof parsed === "string" ? parsed : parsed?.message || `HTTP ${res.status}`);
+      (err as any).status = res.status;
+      throw err;
+    }
+    return parsed as TRes;
+  } catch (err: any) {
+    logHttp("ERR", { reqId, url, msg: err?.message || String(err), stack: err?.stack, ms: Date.now() - t0 });
+    throw err;
   }
-  return parsed as TRes;
 }
 
 /* ====== POST JSON com Bearer ====== */
 async function postJson<TRes>(url: string, body: any, opts: RequestOpts = {}) {
+  const reqId = nextReqId("POST");
+  const t0 = Date.now();
   const useAuth = opts.auth !== false; // default true
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -277,19 +331,30 @@ async function postJson<TRes>(url: string, body: any, opts: RequestOpts = {}) {
   };
   if (useAuth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
 
-  const res = await fetchWithTimeout(url, {
-    method: "POST",
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-    timeoutMs: opts.timeoutMs ?? 20000,
-  });
-  const text = await res.text().catch(() => "");
-  const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
-  if (!res.ok) {
-    if (res.status === 401 && _authToken) clearAuthToken();
-    throw new Error(typeof parsed === "string" ? parsed : parsed?.message || `HTTP ${res.status}`);
+  logHttp("REQ", { reqId, method: "POST", url, headers: redactHeaders(headers), body: toPrintableBody(body) });
+
+  try {
+    const res = await fetchWithTimeout(url, {
+      method: "POST",
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      timeoutMs: opts.timeoutMs ?? 20000,
+    });
+    const text = await res.text().catch(() => "");
+    logHttp("RES", { reqId, url, status: res.status, ms: Date.now() - t0, body: text?.slice(0, 8000) });
+
+    const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
+    if (!res.ok) {
+      if (res.status === 401 && _authToken) clearAuthToken();
+      const err = new Error(typeof parsed === "string" ? parsed : parsed?.message || `HTTP ${res.status}`);
+      (err as any).status = res.status;
+      throw err;
+    }
+    return parsed as TRes;
+  } catch (err: any) {
+    logHttp("ERR", { reqId, url, body: toPrintableBody(body), msg: err?.message || "erro", stack: err?.stack, ms: Date.now() - t0 });
+    throw err;
   }
-  return parsed as TRes;
 }
 
 /* ========== Endpoints de Users ========== */
@@ -304,16 +369,21 @@ export async function registerUser(payload: RegisterPayload, file?: UploadFile) 
       type: file.type || "application/octet-stream",
     } as any);
   }
-  // registro NÃO envia Authorization
   return postMultipart<any>(url, form, { timeoutMs: 25000, retries: 2, auth: false });
 }
 
 export async function loginUser(payload: LoginPayload): Promise<LoginResponse> {
   const url = buildUrl(routes.users.login);
   const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
-  // login NÃO envia Authorization
+
+  const reqId = nextReqId("POST-LOGIN");
+  const t0 = Date.now();
+  logHttp("REQ", { reqId, method: "POST", url, headers, body: toPrintableBody(payload) });
+
   const res = await fetchWithTimeout(url, { method: "POST", headers, body: JSON.stringify(payload), timeoutMs: 20000 });
   const text = await res.text().catch(() => "");
+  logHttp("RES", { reqId, url, status: res.status, ms: Date.now() - t0, body: text?.slice(0, 8000) });
+
   const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
   if (!res.ok) throw new Error(typeof parsed === "string" ? parsed : parsed?.message || `HTTP ${res.status}`);
 
@@ -329,7 +399,6 @@ export async function loginUser(payload: LoginPayload): Promise<LoginResponse> {
 
 export async function getUserById(id: string) {
   const url = buildUrl(routes.users.getById, { id });
-  // auth=true por padrão
   return getJson<User>(url, { timeoutMs: 15000, retries: 1 });
 }
 
@@ -342,7 +411,6 @@ export async function getPerfilByEmail(email: string): Promise<PerfilResponse> {
     return cached.data;
   }
   const url = buildUrl(routes.users.getPerfil, undefined, { email: key });
-  // auth=true por padrão
   const perfil = await getJson<PerfilResponse>(url, { timeoutMs: 15000, retries: 1 });
   _perfilCache.set(key, { data: perfil, ts: now });
   setCurrentUser(perfil);
@@ -363,7 +431,7 @@ export type VideoDTO = {
   id: string;
   userId: string;
   descricao?: string | null;
-  hlsMasterUrl: string | null;   // CDN HLS .m3u8 (ideal: já assinada pelo backend)
+  hlsMasterUrl: string | null;   // CDN HLS .m3u8
   streamVideoId?: string | null;
   status: VideoStatus;
   dataUpload?: string | null;
@@ -390,7 +458,6 @@ function guessMime(uri?: string) {
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
 
 export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
-  // Tenta extrair o userId do JWT; se falhar, tenta carregar do backend; se ainda falhar, prossegue sem
   let userId = getUserIdFromToken();
 
   if (!userId) {
@@ -400,7 +467,6 @@ export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
     } catch { /* ignora */ }
   }
 
-  // Passe os novos parâmetros para o backend
   const url = buildUrl(routes.videos.upload, undefined, {
     waitSeconds: input.waitSeconds ?? 0,
     reprocess: input.reprocess ?? true,
@@ -418,7 +484,6 @@ export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
     type: input.file.type || guessMime(input.file.uri),
   } as any);
 
-  // auth=true por padrão
   try {
     return await postMultipart<VideoDTO>(url, form, { timeoutMs: UPLOAD_TIMEOUT_MS, retries: 0 });
   } catch (e: any) {
@@ -430,7 +495,6 @@ export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
   }
 }
 
-/** Dispara reprocess no backend e pode pedir para ele esperar alguns segundos pela HLS */
 export async function reprocessVideo(id: string, waitSeconds = 10): Promise<VideoDTO> {
   const url = buildUrl(routes.videos.reprocess, { id }, { waitSeconds });
   return postJson<VideoDTO>(url, null, { timeoutMs: 25_000 });
@@ -453,21 +517,18 @@ async function preflightUrl(url: string, timeoutMs = 7000): Promise<boolean> {
 const FEED_CACHE_KEY = "FEED_CACHE_V2";
 const FEED_TTL_MS = 15_000;
 
-/** Busca do endpoint /api/videos/ready.
- *  Por padrão envia Authorization. Preflight é opcional (default true). */
+/** Busca do endpoint /api/videos/ready. Por padrão envia Authorization. Preflight é opcional (default true). */
 export async function fetchFeedReady(
   limit = 12,
   opts?: { preflight?: boolean }
 ): Promise<VideoDTO[]> {
   const url = buildUrl(routes.videos.ready, undefined, { limit });
   try {
-    // auth=true por padrão
     const list = await getJson<VideoDTO[]>(url, { timeoutMs: 15_000, retries: 1 });
     let ready = (list || []).filter(v => typeof v.hlsMasterUrl === "string" && !!v.hlsMasterUrl);
 
     const doPreflight = opts?.preflight !== false; // default true
     if (doPreflight && ready.length) {
-      // valida em paralelo (limite simples)
       const checks = await Promise.all(
         ready.map(async (v) => ({ v, ok: await preflightUrl(v.hlsMasterUrl as string, 7000) }))
       );
@@ -502,6 +563,145 @@ export async function getLastMatchedUserId(): Promise<string | null> {
 
 export async function clearLastMatchedUserId(): Promise<void> {
   try { await AsyncStorage.removeItem(LAST_MATCH_USER_ID_KEY); } catch {}
+}
+
+/* ======================= MATCH: Tipos e Helpers ======================= */
+export type UUID = string;
+
+/** ⚠️ Alinhado com o backend atual */
+export type InviteStatus = "PENDING" | "ACCEPTED";
+
+export type InviteRequest = {
+  inviterId: UUID;
+  targetId: UUID;
+  inviterName?: string;
+  inviterPhone?: string;
+  inviterAvatar?: string;
+};
+
+export type InviteDTO = {
+  id: UUID;
+  inviterId: UUID;
+  targetId: UUID;
+  inviterName?: string;
+  inviterPhone?: string;
+  inviterAvatar?: string;
+  status: InviteStatus;
+  createdAt: string;
+};
+
+export type InviteResponse = {
+  matched: boolean;
+  matchId?: UUID;
+  invite?: InviteDTO;
+};
+
+export type AcceptRequest = {
+  inviteId?: UUID;
+  inviterId?: UUID;
+  targetId?: UUID;
+};
+
+export type AcceptDTO = {
+  id: UUID;
+  inviteId: UUID;
+  inviterName?: string;
+  inviterPhone?: string;
+  inviterAvatar?: string;
+  createdAt: string;
+};
+
+export type MatchDTO = {
+  id: UUID;
+  userA: UUID;
+  userB: UUID;
+  conviteMutuo: boolean;
+  createdAt: string;
+};
+
+async function ensureMe() {
+  if (!_currentUser) await initCurrentUserFromToken().catch(() => null);
+  if (!_currentUser) throw new Error("Usuário não autenticado");
+  return _currentUser as User | PerfilResponse;
+}
+
+/** Monta InviteRequest com seu perfil e targetId do dono do vídeo */
+export async function buildInvitePayloadFromProfile(targetId: string): Promise<InviteRequest> {
+  const me = await ensureMe();
+  const meId = (me as any).id || getUserIdFromToken();
+  if (!meId) throw new Error("Não foi possível obter seu userId");
+  return {
+    inviterId: String(meId),
+    targetId: String(targetId),
+    inviterName: me.nome,
+    inviterPhone: me.telefone,
+    inviterAvatar: (me as any).avatarUrl ?? undefined,
+  };
+}
+
+/** POST /api/matches/invite */
+export async function inviteMatchForTarget(targetId: string): Promise<InviteResponse> {
+  const body = await buildInvitePayloadFromProfile(targetId);
+  const url = buildUrl(routes.matches.invite);
+  return postJson<InviteResponse>(url, body);
+}
+
+/** POST /api/matches/accept usando par (inviterId, targetId) — compat. */
+export async function acceptMatchByPair(inviterId: string, targetId: string): Promise<AcceptDTO> {
+  const url = buildUrl(routes.matches.accept);
+  return postJson<AcceptDTO>(url, { inviterId, targetId } as AcceptRequest);
+}
+
+/** POST /api/matches/accept com inviteId (preferível na tela de convites) */
+export async function acceptInvite(inviteId: string): Promise<AcceptDTO> {
+  const url = buildUrl(routes.matches.accept);
+  return postJson<AcceptDTO>(url, { inviteId } as AcceptRequest);
+}
+
+/** GET /api/matches/user/:userId */
+export async function listMyMatches(userId?: string): Promise<MatchDTO[]> {
+  let uid = userId || getUserIdFromToken();
+  if (!uid) {
+    const me = await ensureMe();
+    // @ts-ignore
+    uid = me?.id;
+  }
+  const url = buildUrl(routes.matches.listForUser, { userId: String(uid) });
+  return getJson<MatchDTO[]>(url, { timeoutMs: 15000, retries: 1 });
+}
+
+/** GET /api/matches/invites/sent?userId=...&status=... */
+export async function listInvitesSent(userId?: string, status?: InviteStatus): Promise<InviteDTO[]> {
+  let uid = userId || getUserIdFromToken();
+  if (!uid) {
+    const me = await initCurrentUserFromToken().catch(() => null);
+    // @ts-ignore
+    uid = me?.id;
+  }
+  const url = buildUrl(routes.matches.sentInvites, undefined, { userId: String(uid), status });
+  try {
+    return await getJson<InviteDTO[]>(url, { timeoutMs: 15000, retries: 1 });
+  } catch (e: any) {
+    if (e?.status === 404) return []; // endpoint não disponível -> trata como vazio
+    throw e;
+  }
+}
+
+/** GET /api/matches/invites/received?userId=...&status=... */
+export async function listInvitesReceived(userId?: string, status?: InviteStatus): Promise<InviteDTO[]> {
+  let uid = userId || getUserIdFromToken();
+  if (!uid) {
+    const me = await initCurrentUserFromToken().catch(() => null);
+    // @ts-ignore
+    uid = me?.id;
+  }
+  const url = buildUrl(routes.matches.receivedInvites, undefined, { userId: String(uid), status });
+  try {
+    return await getJson<InviteDTO[]>(url, { timeoutMs: 15000, retries: 1 });
+  } catch (e: any) {
+    if (e?.status === 404) return []; // endpoint não disponível -> trata como vazio
+    throw e;
+  }
 }
 
 /* -----------------------------------------------------------------------

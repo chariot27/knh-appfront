@@ -12,7 +12,7 @@ import { Feather } from "@expo/vector-icons";
 
 import PubsScreen, { type PubsScreenHandle, type Decision } from "../pubs/index";
 import type { VideoDTO } from "../gateway/api";
-import { saveLastMatchedUserId } from "../gateway/api";
+import { saveLastMatchedUserId, inviteMatchForTarget } from "../gateway/api";
 
 import ContatosScreen from "../contatos";
 import AddVideoScreen from "../video";
@@ -63,7 +63,7 @@ export default function Dashboard() {
     ]).start();
   }
 
-  function onMatch(decision: Decision) {
+  async function onMatch(decision: Decision) {
     pubsRef.current?.decide(decision);
   }
 
@@ -76,12 +76,26 @@ export default function Dashboard() {
             onDecision={async (pub: VideoDTO, decision: Decision) => {
               console.log("DECISION:", decision, "PUB:", pub.id);
               if (decision === "like") {
+                // 1) salva quem foi o "alvo" do match (fallback para tela de aceitar)
                 await saveLastMatchedUserId(pub.userId);
                 logHighlight(`[MATCH-CACHE] userId salvo: ${pub.userId}`);
+
+                // 2) envia convite ao backend com SEU perfil + targetId = dono do vídeo
+                try {
+                  const res = await inviteMatchForTarget(pub.userId);
+                  if (res.matched && res.matchId) {
+                    logHighlight(`[MATCH] Mútuo! matchId=${res.matchId}`);
+                    // exemplo: navegar para o chat
+                    // router.push(`/chat/${res.matchId}`);
+                  } else {
+                    console.log("[MATCH] Convite enviado, aguardando aceite. inviteId=", res.invite?.id);
+                  }
+                } catch (err: any) {
+                  console.warn("[MATCH] Falha ao enviar convite:", err?.message || err);
+                }
               }
             }}
             onActive={(pub: VideoDTO) => {
-              // se quiser mostrar o nome na UI, dá pra atualizar um estado aqui
               const _ = displayName(pub);
             }}
           />

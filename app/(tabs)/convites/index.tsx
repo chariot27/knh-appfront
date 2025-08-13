@@ -1,5 +1,4 @@
-// app/(tabs)/convites/index.tsx
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -15,75 +14,104 @@ import {
   TextInput,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
+import {
+  InviteDTO,
+  InviteStatus,
+  acceptInvite,
+  getUserIdFromToken,
+  initCurrentUserFromToken,
+  listInvitesReceived,
+} from "../gateway/api";
 
 const { width } = Dimensions.get("window");
 const GUTTER = 14;
-const CARD_W = width - GUTTER * 2; // coluna única full width
+const CARD_W = width - GUTTER * 2;
 const NAVBAR_HEIGHT = 72;
 const BOTTOM_INSET = NAVBAR_HEIGHT + 16;
 
-export type Convite = {
+type ConviteItem = {
   id: string;
+  inviterId: string;
+  targetId: string;
   name: string;
-  avatarUrl: string;
+  avatarUrl?: string;
   message?: string;
   createdAt: number;
 };
 
-// --- MOCK: convites pendentes ---
-function makeInvites(total = 12): Convite[] {
-  const baseNames = ["Alice", "Bruno", "Carla", "Diego", "Érica", "Felipe", "Gabi", "Heitor"];
-  return Array.from({ length: total }).map((_, i) => ({
-    id: String(1000 + i),
-    name: `${baseNames[i % baseNames.length]} ${120 + i}`,
-    avatarUrl: `https://i.pravatar.cc/200?img=${(i % 70) + 1}`,
-    message:
-      i % 2 === 0 ? "Curtiu seu pub e quer conectar" : "Quer match mútuo pra trocar uma ideia",
-    createdAt: Date.now() - i * 3600_000,
-  }));
-}
-
-// normaliza para busca (remove acentos e caixa)
 function norm(txt: string) {
   return txt
     .normalize("NFD")
-    // @ts-ignore \p{Diacritic} suportado nos motores modernos
+    // @ts-ignore
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase()
     .trim();
 }
 
 export default function ConvitesScreen() {
-  const [data, setData] = useState<Convite[]>(() => makeInvites(12));
+  const [data, setData] = useState<ConviteItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
-
-  const onRefresh = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      // TODO: trocar por fetch real
-      await new Promise((r) => setTimeout(r, 600));
-      setData(makeInvites(12));
-    } finally {
-      setRefreshing(false);
-    }
-  }, []);
 
   const toast = (msg: string) => {
     if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.SHORT);
     else Alert.alert(msg);
   };
 
-  const onAccept = useCallback((id: string) => {
-    // TODO: chamar API de aceitar -> criar match e mover pra contatos
-    setData((prev) => prev.filter((c) => c.id !== id));
-    toast("Match confirmado ✔");
+  const load = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      let meId = getUserIdFromToken();
+      if (!meId) {
+        const me = await initCurrentUserFromToken().catch(() => null);
+        // @ts-ignore
+        meId = me?.id || null;
+      }
+      if (!meId) throw new Error("Usuário não autenticado.");
+
+      // RECEBIDOS pendentes
+      const rows: InviteDTO[] = await listInvitesReceived(meId, "PENDING" as InviteStatus);
+
+      const items: ConviteItem[] = rows.map((inv) => ({
+        id: inv.id,
+        inviterId: inv.inviterId,
+        targetId: inv.targetId,
+        name: inv.inviterName || `Usuário ${inv.inviterId.slice(0, 6)}`,
+        avatarUrl:
+          inv.inviterAvatar ||
+          `https://i.pravatar.cc/200?u=${encodeURIComponent(inv.inviterId)}`,
+        message: "Curtiu seu pub e quer conectar",
+        createdAt: Date.parse(inv.createdAt || new Date().toISOString()),
+      }));
+
+      setData(items);
+    } catch (e: any) {
+      toast(e?.message || "Falha ao carregar convites.");
+    } finally {
+      setRefreshing(false);
+    }
   }, []);
 
-  const onDecline = useCallback((id: string) => {
-    // TODO: chamar API de recusar convite
-    setData((prev) => prev.filter((c) => c.id !== id));
-    toast("Convite recusado");
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const onRefresh = useCallback(load, [load]);
+
+  const onAccept = useCallback(async (inviteId: string) => {
+    try {
+      await acceptInvite(inviteId);
+      setData((prev) => prev.filter((c) => c.id !== inviteId));
+      toast("Match confirmado ✔");
+    } catch (e: any) {
+      toast(`Falha ao aceitar: ${e?.message || "erro"}`);
+    }
+  }, []);
+
+  const onDecline = useCallback((inviteId: string) => {
+    // TODO: endpoint de rejeitar/cancelar se/quando existir
+    setData((prev) => prev.filter((c) => c.id !== inviteId));
+    toast("Convite removido");
   }, []);
 
   const filtered = useMemo(() => {
@@ -92,7 +120,7 @@ export default function ConvitesScreen() {
     return data.filter((c) => norm(c.name).includes(q));
   }, [data, query]);
 
-  const keyExtractor = useCallback((it: Convite) => it.id, []);
+  const keyExtractor = useCallback((it: ConviteItem) => it.id, []);
   const contentStyle = useMemo(
     () => ({ padding: GUTTER, paddingBottom: BOTTOM_INSET }),
     []
@@ -101,7 +129,6 @@ export default function ConvitesScreen() {
   const ListHeader = useCallback(() => {
     return (
       <View style={s.headerWrap}>
-        {/* Topbar: título + contador */}
         <View style={s.topbar}>
           <Text style={s.title}>Convites</Text>
           <View style={s.counter}>
@@ -112,7 +139,6 @@ export default function ConvitesScreen() {
           </View>
         </View>
 
-        {/* Busca */}
         <View style={s.searchWrap}>
           <Feather name="search" size={18} color="#aaa" />
           <TextInput
@@ -141,20 +167,14 @@ export default function ConvitesScreen() {
   }, [filtered.length, query]);
 
   const renderItem = useCallback(
-    ({ item }: { item: Convite }) => {
+    ({ item }: { item: ConviteItem }) => {
       return (
         <View style={s.card}>
           <View style={s.row}>
             <Image source={{ uri: item.avatarUrl }} style={s.avatar} />
             <View style={s.info}>
-              <Text numberOfLines={1} style={s.name}>
-                {item.name}
-              </Text>
-              {!!item.message && (
-                <Text numberOfLines={2} style={s.msg}>
-                  {item.message}
-                </Text>
-              )}
+              <Text numberOfLines={1} style={s.name}>{item.name}</Text>
+              {!!item.message && <Text numberOfLines={2} style={s.msg}>{item.message}</Text>}
             </View>
           </View>
 
@@ -204,16 +224,8 @@ export default function ConvitesScreen() {
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000" },
 
-  // Header (título + contador + busca)
-  headerWrap: { 
-    marginBottom: 12, 
-    marginTop: 40 // ⬅️ aumente esse valor para descer mais
-    },
-    topbar: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 14, // um pouco mais de espaço abaixo do título
-    },
+  headerWrap: { marginBottom: 12, marginTop: 40 },
+  topbar: { flexDirection: "row", alignItems: "center", marginBottom: 14 },
 
   title: { color: "#fff", fontSize: 18, fontWeight: "800", flex: 1 },
   counter: {
@@ -240,15 +252,9 @@ const s = StyleSheet.create({
     borderColor: "#161616",
     backgroundColor: "#0c0c0c",
   },
-  searchInput: {
-    flex: 1,
-    color: "#fff",
-    fontSize: 14,
-    paddingVertical: 4,
-  },
+  searchInput: { flex: 1, color: "#fff", fontSize: 14, paddingVertical: 4 },
   clearBtn: { padding: 2, borderRadius: 8 },
 
-  // Cards
   card: {
     width: CARD_W,
     borderRadius: 16,
@@ -274,20 +280,11 @@ const s = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
-  btnGhost: {
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderWidth: 1,
-    borderColor: "#1a1a1a",
-  },
+  btnGhost: { backgroundColor: "rgba(255,255,255,0.06)", borderWidth: 1, borderColor: "#1a1a1a" },
   btnGhostText: { fontSize: 14, fontWeight: "800" },
-  btnPrimary: {
-    backgroundColor: "#6f63ff",
-    borderWidth: 1,
-    borderColor: "#6f63ff",
-  },
+  btnPrimary: { backgroundColor: "#6f63ff", borderWidth: 1, borderColor: "#6f63ff" },
   btnPrimaryText: { color: "#fff", fontSize: 14, fontWeight: "800" },
 
-  // vazio
   empty: { alignItems: "center", justifyContent: "center", paddingVertical: 32, gap: 8 },
   emptyTxt: { color: "#888", fontSize: 13 },
 });
