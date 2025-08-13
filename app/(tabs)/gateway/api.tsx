@@ -1,21 +1,12 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-/* =================== Polyfill base64 para RN (require dinâmico SAFE) =================== */
+/* =================== Polyfill base64 (RN) =================== */
 let __b64decode: ((s: string) => string) | undefined;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const mod = require("base-64");
-  __b64decode = mod?.decode;
-} catch {
-  __b64decode = undefined;
-}
-
+try { const mod = require("base-64"); __b64decode = mod?.decode; } catch { __b64decode = undefined; }
 if (typeof globalThis.atob === "undefined") {
-  if (__b64decode) {
-    // @ts-ignore
+  if (__b64decode) { // @ts-ignore
     globalThis.atob = __b64decode;
   } else {
-    // eslint-disable-next-line no-console
     console.warn("[api.tsx] 'atob' ausente e pacote 'base-64' não instalado. JWT não será decodificado.");
   }
 }
@@ -41,11 +32,11 @@ export const routes = {
     reprocess: { path: "/api/videos/:id/reprocess", method: "POST" } as RouteEntry,
   },
   matches: {
-    invite:           { path: "/api/matches/invite",            method: "POST" } as RouteEntry,
-    accept:           { path: "/api/matches/accept",            method: "POST" } as RouteEntry,
-    listForUser:      { path: "/api/matches/user/:userId",      method: "GET"  } as RouteEntry,
-    sentInvites:      { path: "/api/matches/invites/sent",      method: "GET"  } as RouteEntry,
-    receivedInvites:  { path: "/api/matches/invites/received",  method: "GET"  } as RouteEntry,
+    invite:          { path: "/api/matches/invite",           method: "POST" } as RouteEntry,
+    accept:          { path: "/api/matches/accept",           method: "POST" } as RouteEntry,
+    listForUser:     { path: "/api/matches/user/:userId",     method: "GET"  } as RouteEntry,
+    sentInvites:     { path: "/api/matches/invites/sent",     method: "GET"  } as RouteEntry,      // pode não existir
+    receivedInvites: { path: "/api/matches/invites/received", method: "GET"  } as RouteEntry,      // pode não existir
   }
 } as const;
 
@@ -71,35 +62,14 @@ export function buildUrl(
   return `${BASE_URL}${full}`.replace(/([^:]\/)\/+/g, "$1");
 }
 
-export function getRouteMethod(entry: RouteEntry | string): HttpMethod {
-  return typeof entry === "string" ? "GET" : entry.method;
-}
-
 /* ========== DEBUG HTTP (logs completos) ========== */
 const DEBUG_HTTP = true;
 let __reqSeq = 0;
-function nextReqId(prefix: string) {
-  __reqSeq = (__reqSeq + 1) % 1_000_000;
-  return `${prefix}-${Date.now()}-${__reqSeq}`;
-}
-function redactHeaders(h?: Record<string, any>) {
-  if (!h) return h;
-  const out: Record<string, any> = { ...h };
-  const k = Object.keys(out).find(x => x.toLowerCase() === "authorization");
-  if (k && typeof out[k] === "string") out[k] = "Bearer ****";
-  return out;
-}
-function toPrintableBody(body: any) {
-  try { return typeof body === "string" ? body : JSON.stringify(body); } catch { return String(body); }
-}
+const nextReqId = (p: string) => { __reqSeq = (__reqSeq + 1) % 1_000_000; return `${p}-${Date.now()}-${__reqSeq}`; };
+const redactHeaders = (h?: Record<string, any>) => { if (!h) return h; const o = { ...h }; const k = Object.keys(o).find(x => x.toLowerCase() === "authorization"); if (k && typeof o[k] === "string") o[k] = "Bearer ****"; return o; };
+const toPrintableBody = (b: any) => { try { return typeof b === "string" ? b : JSON.stringify(b); } catch { return String(b); } };
 function logHttp(tag: "REQ" | "RES" | "ERR", payload: any) {
-  if (!DEBUG_HTTP) return;
-  try {
-    const safe = JSON.stringify(payload, null, 2);
-    console.log(`[HTTP][${tag}]`, safe);
-  } catch {
-    console.log(`[HTTP][${tag}]`, payload);
-  }
+  if (!DEBUG_HTTP) return; try { console.log(`[HTTP][${tag}]`, JSON.stringify(payload, null, 2)); } catch { console.log(`[HTTP][${tag}]`, payload); }
 }
 
 /* ========== Auth token & user cache ========== */
@@ -117,17 +87,7 @@ export type PerfilResponse = {
   data_criacao?: string | null;
 };
 
-export type User = {
-  id: string;
-  nome: string;
-  email: string;
-  telefone: string;
-  tipo: "CONSULTOR" | "PROFISSIONAL";
-  bio?: string | null;
-  tags?: string[] | null;
-  avatarUrl?: string | null;
-  data_criacao?: string | null;
-};
+export type User = PerfilResponse & { id: string };
 
 let _currentUser: (PerfilResponse | User) | null = null;
 
@@ -142,98 +102,38 @@ function normalizeToken(t?: string | null) {
   if (v.toLowerCase().startsWith("bearer ")) v = v.slice(7).trim();
   return v || null;
 }
-
 export function setAuthToken(token: string | null) { _authToken = normalizeToken(token); }
 export function getAuthToken() { return _authToken; }
-export function clearAuthToken() {
-  _authToken = null;
-  _currentUser = null;
-  _perfilCache.clear();
-  AsyncStorage.removeItem(AUTH_KEY).catch(() => {});
-}
+export function clearAuthToken() { _authToken = null; _currentUser = null; _perfilCache.clear(); AsyncStorage.removeItem(AUTH_KEY).catch(() => {}); }
 export function setCurrentUser(u: (PerfilResponse | User) | null) { _currentUser = u; }
 export function getCurrentUser() { return _currentUser; }
 
 export async function persistAuthToken(token: string | null) {
   _authToken = normalizeToken(token);
-  if (_authToken) {
-    await AsyncStorage.setItem(AUTH_KEY, _authToken);
-  } else {
-    await AsyncStorage.removeItem(AUTH_KEY);
-  }
+  if (_authToken) await AsyncStorage.setItem(AUTH_KEY, _authToken);
+  else await AsyncStorage.removeItem(AUTH_KEY);
 }
+export async function restoreAuthToken() { const t = await AsyncStorage.getItem(AUTH_KEY); _authToken = normalizeToken(t); return _authToken; }
+export async function initAuthOnBoot() { await restoreAuthToken(); try { if (_authToken) await initCurrentUserFromToken(); } catch {} }
 
-export async function restoreAuthToken() {
-  const t = await AsyncStorage.getItem(AUTH_KEY);
-  _authToken = normalizeToken(t);
-  return _authToken;
-}
-
-export async function initAuthOnBoot() {
-  await restoreAuthToken();
-  try {
-    if (_authToken) await initCurrentUserFromToken();
-  } catch { /* opcionalmente logar */ }
-}
-
-/* ========== Tipos de payloads gerais ========== */
-export type RegisterPayload = {
-  nome: string;
-  email: string;
-  telefone: string;
-  senha: string;
-  tipo: "CONSULTOR" | "PROFISSIONAL";
-  bio?: string;
-  tags?: string[];
-  avatarUrl?: string;
-};
-
-export type UploadFile = {
-  uri: string;
-  name?: string;
-  type?: string;
-};
-
-export type LoginPayload = { email: string; password: string };
-export type LoginResponse = { token: string };
-
-type RequestOpts = {
-  timeoutMs?: number;
-  retries?: number;
-  /** quando omitido, assume true (use Bearer) */
-  auth?: boolean;
-};
-
-/* ========== Utils HTTP ========== */
-async function fetchWithTimeout(
-  input: RequestInfo | URL,
-  init?: RequestInit & { timeoutMs?: number }
-) {
+/* ========== HTTP utils ========== */
+type RequestOpts = { timeoutMs?: number; retries?: number; auth?: boolean };
+async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit & { timeoutMs?: number }) {
   const { timeoutMs = 20000, ...rest } = init || {};
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const headers = { Accept: "application/json", ...(rest.headers || {}) };
     return await fetch(input, { ...rest, headers, signal: controller.signal });
-  } finally {
-    clearTimeout(id);
-  }
+  } finally { clearTimeout(id); }
 }
-
 // seguro mesmo se não houver atob
 function b64urlToString(b64url: string) {
-  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/")
-    + "=".repeat((4 - (b64url.length % 4)) % 4);
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (b64url.length % 4)) % 4);
   if (typeof atob !== "function") return "";
-  try {
-    const raw = atob(b64);
-    // eslint-disable-next-line deprecation/deprecation
-    return decodeURIComponent(escape(raw));
-  } catch {
-    return "";
-  }
+  try { const raw = atob(b64); // eslint-disable-next-line deprecation/deprecation
+    return decodeURIComponent(escape(raw)); } catch { return ""; }
 }
-
 /** Lê o userId (sub/userId/id) do payload do JWT atual */
 export function getUserIdFromToken(): string | null {
   const raw = normalizeToken(_authToken);
@@ -244,12 +144,9 @@ export function getUserIdFromToken(): string | null {
     const payloadStr = b64urlToString(parts[1]);
     const payload = JSON.parse(payloadStr || "{}");
     return payload.sub || payload.userId || payload.id || null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-/** GET JSON com Bearer por padrão (auth=true) */
 async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes> {
   const attemptMax = Math.max(1, opts.retries ?? 1);
   const useAuth = opts.auth !== false; // default true
@@ -286,7 +183,6 @@ async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes>
   throw lastErr ?? new Error("Falha desconhecida");
 }
 
-/* ====== Multipart helper (POST) — Bearer por padrão ====== */
 async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpts = {}) {
   const reqId = nextReqId("POST-MULTI");
   const t0 = Date.now();
@@ -320,7 +216,6 @@ async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpt
   }
 }
 
-/* ====== POST JSON com Bearer ====== */
 async function postJson<TRes>(url: string, body: any, opts: RequestOpts = {}) {
   const reqId = nextReqId("POST");
   const t0 = Date.now();
@@ -352,12 +247,20 @@ async function postJson<TRes>(url: string, body: any, opts: RequestOpts = {}) {
     }
     return parsed as TRes;
   } catch (err: any) {
-    logHttp("ERR", { reqId, url, body: toPrintableBody(body), msg: err?.message || "erro", stack: err?.stack, ms: Date.now() - t0 });
+    logHttp("ERR", { reqId, url, body: toPrintableBody(body), msg: err?.message || String(err), stack: err?.stack, ms: Date.now() - t0 });
     throw err;
   }
 }
 
-/* ========== Endpoints de Users ========== */
+/* ========== Users ========== */
+export type RegisterPayload = {
+  nome: string; email: string; telefone: string; senha: string; tipo: "CONSULTOR" | "PROFISSIONAL";
+  bio?: string; tags?: string[]; avatarUrl?: string;
+};
+export type UploadFile = { uri: string; name?: string; type?: string; };
+export type LoginPayload = { email: string; password: string };
+export type LoginResponse = { token: string };
+
 export async function registerUser(payload: RegisterPayload, file?: UploadFile) {
   const url = buildUrl(routes.users.register);
   const form = new FormData();
@@ -425,26 +328,13 @@ export async function initCurrentUserFromToken(): Promise<User | null> {
   return user;
 }
 
-/* ========== Vídeos (upload + reprocess + feed READY) ========== */
+/* ========== Vídeos (upload + ready) ========== */
 export type VideoStatus = "UPLOADED" | "PROCESSING" | "READY" | "FAILED";
 export type VideoDTO = {
-  id: string;
-  userId: string;
-  descricao?: string | null;
-  hlsMasterUrl: string | null;   // CDN HLS .m3u8
-  streamVideoId?: string | null;
-  status: VideoStatus;
-  dataUpload?: string | null;
+  id: string; userId: string; descricao?: string | null; hlsMasterUrl: string | null;
+  streamVideoId?: string | null; status: VideoStatus; dataUpload?: string | null;
 };
-
-export type UploadVideoInput = {
-  descricao: string;
-  file: UploadFile;
-  /** segundos para o backend esperar a HLS (0 = não esperar) */
-  waitSeconds?: number;
-  /** forçar reprocess imediatamente após o upload (default true no backend) */
-  reprocess?: boolean;
-};
+export type UploadVideoInput = { descricao: string; file: UploadFile; waitSeconds?: number; reprocess?: boolean; };
 
 function guessMime(uri?: string) {
   if (!uri) return "application/octet-stream";
@@ -454,18 +344,11 @@ function guessMime(uri?: string) {
   if (u.endsWith(".mkv")) return "video/x-matroska";
   return "video/mp4";
 }
-
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
 
 export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
   let userId = getUserIdFromToken();
-
-  if (!userId) {
-    try {
-      const me = await initCurrentUserFromToken();
-      userId = me?.id ?? (null as any);
-    } catch { /* ignora */ }
-  }
+  if (!userId) { try { const me = await initCurrentUserFromToken(); userId = me?.id ?? (null as any); } catch {} }
 
   const url = buildUrl(routes.videos.upload, undefined, {
     waitSeconds: input.waitSeconds ?? 0,
@@ -473,11 +356,9 @@ export async function uploadVideo(input: UploadVideoInput): Promise<VideoDTO> {
   });
 
   const form = new FormData();
-
   const data: any = { descricao: input.descricao };
-  if (userId) data.userId = userId; // backend pode inferir pelo JWT se ausente
+  if (userId) data.userId = userId;
   form.append("data", JSON.stringify(data) as any);
-
   form.append("file", {
     uri: input.file.uri,
     name: input.file.name || "video.mp4",
@@ -508,26 +389,19 @@ async function preflightUrl(url: string, timeoutMs = 7000): Promise<boolean> {
     const res = await fetch(url, { method: "GET", headers: { Range: "bytes=0-1" }, signal: ctrl.signal as any });
     clearTimeout(id);
     return res.ok;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
 /* cache do feed prontos (READY) */
 const FEED_CACHE_KEY = "FEED_CACHE_V2";
 const FEED_TTL_MS = 15_000;
-
-/** Busca do endpoint /api/videos/ready. Por padrão envia Authorization. Preflight é opcional (default true). */
-export async function fetchFeedReady(
-  limit = 12,
-  opts?: { preflight?: boolean }
-): Promise<VideoDTO[]> {
+export async function fetchFeedReady(limit = 12, opts?: { preflight?: boolean }): Promise<VideoDTO[]> {
   const url = buildUrl(routes.videos.ready, undefined, { limit });
   try {
     const list = await getJson<VideoDTO[]>(url, { timeoutMs: 15_000, retries: 1 });
     let ready = (list || []).filter(v => typeof v.hlsMasterUrl === "string" && !!v.hlsMasterUrl);
 
-    const doPreflight = opts?.preflight !== false; // default true
+    const doPreflight = opts?.preflight !== false;
     if (doPreflight && ready.length) {
       const checks = await Promise.all(
         ready.map(async (v) => ({ v, ok: await preflightUrl(v.hlsMasterUrl as string, 7000) }))
@@ -549,26 +423,9 @@ export async function fetchFeedReady(
   }
 }
 
-/* ========== Cache do último match (userId do dono do vídeo) ========== */
-const LAST_MATCH_USER_ID_KEY = "LAST_MATCH_USER_ID";
-
-export async function saveLastMatchedUserId(userId: string | null | undefined) {
-  if (!userId) return;
-  try { await AsyncStorage.setItem(LAST_MATCH_USER_ID_KEY, String(userId)); } catch {}
-}
-
-export async function getLastMatchedUserId(): Promise<string | null> {
-  try { return (await AsyncStorage.getItem(LAST_MATCH_USER_ID_KEY)) || null; } catch { return null; }
-}
-
-export async function clearLastMatchedUserId(): Promise<void> {
-  try { await AsyncStorage.removeItem(LAST_MATCH_USER_ID_KEY); } catch {}
-}
-
-/* ======================= MATCH: Tipos e Helpers ======================= */
+/* ======================= MATCH/INVITE: Tipos ======================= */
 export type UUID = string;
-
-/** ⚠️ Alinhado com o backend atual */
+/** Alinhado com o backend (enum) */
 export type InviteStatus = "PENDING" | "ACCEPTED";
 
 export type InviteRequest = {
@@ -585,7 +442,7 @@ export type InviteDTO = {
   targetId: UUID;
   inviterName?: string;
   inviterPhone?: string;
-  inviterAvatar?: string;
+  inviterAvatar?: string;   // URL CDN (renderizar direto)
   status: InviteStatus;
   createdAt: string;
 };
@@ -596,29 +453,73 @@ export type InviteResponse = {
   invite?: InviteDTO;
 };
 
-export type AcceptRequest = {
-  inviteId?: UUID;
-  inviterId?: UUID;
-  targetId?: UUID;
-};
+export type AcceptRequest = { inviteId?: UUID; inviterId?: UUID; targetId?: UUID; };
+export type AcceptDTO = { id: UUID; inviteId: UUID; inviterName?: string; inviterPhone?: string; inviterAvatar?: string; createdAt: string; };
+export type MatchDTO = { id: UUID; userA: UUID; userB: UUID; conviteMutuo: boolean; createdAt: string; };
 
-export type AcceptDTO = {
-  id: UUID;
-  inviteId: UUID;
-  inviterName?: string;
-  inviterPhone?: string;
-  inviterAvatar?: string;
-  createdAt: string;
-};
+/* ======================= INVITES: CACHE LOCAL =======================
+   Estrutura:
+   - INV_SENT_V1:<inviterId>  -> InviteDTO[] (convites que EU ENVIEI)
+   - INV_RECV_V1:<targetId>   -> InviteDTO[] (convites que EU RECEBI)
+   - INV_IDX_V1:<inviteId>    -> {inviterId, targetId} (índice para updates)
+==================================================================== */
+const INV_SENT_PREFIX = "INV_SENT_V1:";
+const INV_RECV_PREFIX = "INV_RECV_V1:";
+const INV_INDEX_PREFIX = "INV_IDX_V1:";
 
-export type MatchDTO = {
-  id: UUID;
-  userA: UUID;
-  userB: UUID;
-  conviteMutuo: boolean;
-  createdAt: string;
-};
+async function _readList(key: string): Promise<InviteDTO[]> {
+  try { const raw = await AsyncStorage.getItem(key); return raw ? (JSON.parse(raw) as InviteDTO[]) : []; }
+  catch { return []; }
+}
+async function _writeList(key: string, list: InviteDTO[]) {
+  try { await AsyncStorage.setItem(key, JSON.stringify(list)); } catch {}
+}
+async function _indexSave(invite: InviteDTO) {
+  try { await AsyncStorage.setItem(INV_INDEX_PREFIX + invite.id, JSON.stringify({ inviterId: invite.inviterId, targetId: invite.targetId })); } catch {}
+}
 
+/** Escreve o convite nas caixas corretas (enviados do remetente + recebidos do alvo) */
+async function _cacheAddInviteBoth(inv: InviteDTO) {
+  const sentKey = INV_SENT_PREFIX + inv.inviterId;
+  const recvKey = INV_RECV_PREFIX + inv.targetId;
+
+  const [sent, recv] = await Promise.all([_readList(sentKey), _readList(recvKey)]);
+  const upsert = (arr: InviteDTO[]) => {
+    const i = arr.findIndex(x => x.id === inv.id);
+    if (i >= 0) arr[i] = inv; else arr.unshift(inv);
+    return arr;
+  };
+  await Promise.all([_writeList(sentKey, upsert(sent)), _writeList(recvKey, upsert(recv)), _indexSave(inv)]);
+}
+
+/** Atualiza status do convite nas duas caixas (usando índice por inviteId) */
+async function _cacheUpdateInviteStatus(inviteId: string, status: InviteStatus) {
+  const idxRaw = await AsyncStorage.getItem(INV_INDEX_PREFIX + inviteId);
+  if (!idxRaw) return;
+  const { inviterId, targetId } = JSON.parse(idxRaw);
+  const sentKey = INV_SENT_PREFIX + inviterId;
+  const recvKey = INV_RECV_PREFIX + targetId;
+
+  const [sent, recv] = await Promise.all([_readList(sentKey), _readList(recvKey)]);
+  const patch = (arr: InviteDTO[]) => {
+    const i = arr.findIndex(x => x.id === inviteId);
+    if (i >= 0) arr[i] = { ...arr[i], status };
+    return arr;
+  };
+  await Promise.all([_writeList(sentKey, patch(sent)), _writeList(recvKey, patch(recv))]);
+}
+
+/** Listas do cache local */
+async function listInvitesSentLocal(userId: string, status?: InviteStatus): Promise<InviteDTO[]> {
+  const list = await _readList(INV_SENT_PREFIX + userId);
+  return status ? list.filter(i => i.status === status) : list;
+}
+async function listInvitesReceivedLocal(userId: string, status?: InviteStatus): Promise<InviteDTO[]> {
+  const list = await _readList(INV_RECV_PREFIX + userId);
+  return status ? list.filter(i => i.status === status) : list;
+}
+
+/* ======================= MATCH: Helpers ======================= */
 async function ensureMe() {
   if (!_currentUser) await initCurrentUserFromToken().catch(() => null);
   if (!_currentUser) throw new Error("Usuário não autenticado");
@@ -639,23 +540,31 @@ export async function buildInvitePayloadFromProfile(targetId: string): Promise<I
   };
 }
 
-/** POST /api/matches/invite */
+/** POST /api/matches/invite + grava em cache local (enviado e recebido) */
 export async function inviteMatchForTarget(targetId: string): Promise<InviteResponse> {
   const body = await buildInvitePayloadFromProfile(targetId);
   const url = buildUrl(routes.matches.invite);
-  return postJson<InviteResponse>(url, body);
+  const res = await postJson<InviteResponse>(url, body);
+  // Salva o convite nas caixas locais (se não virou match imediato)
+  if (!res.matched && res.invite) {
+    await _cacheAddInviteBoth(res.invite);
+  }
+  return res;
 }
 
-/** POST /api/matches/accept usando par (inviterId, targetId) — compat. */
-export async function acceptMatchByPair(inviterId: string, targetId: string): Promise<AcceptDTO> {
-  const url = buildUrl(routes.matches.accept);
-  return postJson<AcceptDTO>(url, { inviterId, targetId } as AcceptRequest);
-}
-
-/** POST /api/matches/accept com inviteId (preferível na tela de convites) */
+/** POST /api/matches/accept com inviteId (preferível na tela de convites) + atualiza cache */
 export async function acceptInvite(inviteId: string): Promise<AcceptDTO> {
   const url = buildUrl(routes.matches.accept);
-  return postJson<AcceptDTO>(url, { inviteId } as AcceptRequest);
+  const out = await postJson<AcceptDTO>(url, { inviteId } as AcceptRequest);
+  await _cacheUpdateInviteStatus(inviteId, "ACCEPTED");
+  return out;
+}
+
+/** (ainda disponível) POST /api/matches/accept com par (inviterId, targetId) */
+export async function acceptMatchByPair(inviterId: string, targetId: string): Promise<AcceptDTO> {
+  const url = buildUrl(routes.matches.accept);
+  const out = await postJson<AcceptDTO>(url, { inviterId, targetId } as AcceptRequest);
+  return out;
 }
 
 /** GET /api/matches/user/:userId */
@@ -670,7 +579,7 @@ export async function listMyMatches(userId?: string): Promise<MatchDTO[]> {
   return getJson<MatchDTO[]>(url, { timeoutMs: 15000, retries: 1 });
 }
 
-/** GET /api/matches/invites/sent?userId=...&status=... */
+/** GET /api/matches/invites/sent?userId=...&status=...  (404 => fallback cache) */
 export async function listInvitesSent(userId?: string, status?: InviteStatus): Promise<InviteDTO[]> {
   let uid = userId || getUserIdFromToken();
   if (!uid) {
@@ -682,12 +591,16 @@ export async function listInvitesSent(userId?: string, status?: InviteStatus): P
   try {
     return await getJson<InviteDTO[]>(url, { timeoutMs: 15000, retries: 1 });
   } catch (e: any) {
-    if (e?.status === 404) return []; // endpoint não disponível -> trata como vazio
-    throw e;
+    if (e?.status === 404) {
+      console.warn("[listInvitesSent] endpoint ausente (404) — usando cache local");
+      return listInvitesSentLocal(String(uid), status);
+    }
+    // também faz fallback para cache em falhas de rede
+    return listInvitesSentLocal(String(uid), status);
   }
 }
 
-/** GET /api/matches/invites/received?userId=...&status=... */
+/** GET /api/matches/invites/received?userId=...&status=...  (404 => fallback cache) */
 export async function listInvitesReceived(userId?: string, status?: InviteStatus): Promise<InviteDTO[]> {
   let uid = userId || getUserIdFromToken();
   if (!uid) {
@@ -699,15 +612,18 @@ export async function listInvitesReceived(userId?: string, status?: InviteStatus
   try {
     return await getJson<InviteDTO[]>(url, { timeoutMs: 15000, retries: 1 });
   } catch (e: any) {
-    if (e?.status === 404) return []; // endpoint não disponível -> trata como vazio
-    throw e;
+    if (e?.status === 404) {
+      console.warn("[listInvitesReceived] endpoint ausente (404) — usando cache local");
+      return listInvitesReceivedLocal(String(uid), status);
+    }
+    // também faz fallback para cache em falhas de rede
+    return listInvitesReceivedLocal(String(uid), status);
   }
 }
 
 /* -----------------------------------------------------------------------
    ⚠️ Se este arquivo estiver dentro de `app/`, o Expo Router tenta tratá-lo
-   como rota e mostra um WARN sobre default export. Ideal é mover para
-   `src/gateway/api.ts` e ajustar imports. Enquanto isso:
+   como rota e mostra um WARN sobre default export. Enquanto isso:
 ------------------------------------------------------------------------- */
 const __noop = {} as never;
 export default __noop;

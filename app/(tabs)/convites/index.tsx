@@ -1,26 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  View,
-  Text,
-  Image,
-  StyleSheet,
-  FlatList,
-  Dimensions,
-  TouchableOpacity,
-  RefreshControl,
-  Platform,
-  ToastAndroid,
-  Alert,
-  TextInput,
+  View, Text, Image, StyleSheet, FlatList, Dimensions,
+  TouchableOpacity, RefreshControl, Platform, ToastAndroid, Alert, TextInput,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import {
-  InviteDTO,
-  InviteStatus,
-  acceptInvite,
-  getUserIdFromToken,
-  initCurrentUserFromToken,
-  listInvitesReceived,
+  InviteDTO, InviteStatus, acceptInvite,
+  getUserIdFromToken, initCurrentUserFromToken, listInvitesReceived,
 } from "../gateway/api";
 
 const { width } = Dimensions.get("window");
@@ -39,24 +25,16 @@ type ConviteItem = {
   createdAt: number;
 };
 
-function norm(txt: string) {
-  return txt
-    .normalize("NFD")
-    // @ts-ignore
-    .replace(/\p{Diacritic}/gu, "")
-    .toLowerCase()
-    .trim();
-}
+const norm = (t: string) =>
+  t.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().trim();
 
 export default function ConvitesScreen() {
   const [data, setData] = useState<ConviteItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
 
-  const toast = (msg: string) => {
-    if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.SHORT);
-    else Alert.alert(msg);
-  };
+  const toast = (m: string) =>
+    Platform.OS === "android" ? ToastAndroid.show(m, ToastAndroid.SHORT) : Alert.alert(m);
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -69,7 +47,7 @@ export default function ConvitesScreen() {
       }
       if (!meId) throw new Error("Usuário não autenticado.");
 
-      // RECEBIDOS pendentes
+      // RECEBIDOS PENDING — do backend (se existir) ou do cache local
       const rows: InviteDTO[] = await listInvitesReceived(meId, "PENDING" as InviteStatus);
 
       const items: ConviteItem[] = rows.map((inv) => ({
@@ -78,8 +56,9 @@ export default function ConvitesScreen() {
         targetId: inv.targetId,
         name: inv.inviterName || `Usuário ${inv.inviterId.slice(0, 6)}`,
         avatarUrl:
-          inv.inviterAvatar ||
-          `https://i.pravatar.cc/200?u=${encodeURIComponent(inv.inviterId)}`,
+          (inv.inviterAvatar && inv.inviterAvatar.length > 3)
+            ? inv.inviterAvatar
+            : `https://i.pravatar.cc/200?u=${encodeURIComponent(inv.inviterId)}`,
         message: "Curtiu seu pub e quer conectar",
         createdAt: Date.parse(inv.createdAt || new Date().toISOString()),
       }));
@@ -92,16 +71,13 @@ export default function ConvitesScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
+  useEffect(() => { load(); }, [load]);
   const onRefresh = useCallback(load, [load]);
 
   const onAccept = useCallback(async (inviteId: string) => {
     try {
-      await acceptInvite(inviteId);
-      setData((prev) => prev.filter((c) => c.id !== inviteId));
+      await acceptInvite(inviteId); // atualiza banco + cache local
+      setData((prev) => prev.filter((c) => c.id !== inviteId)); // sai da fila
       toast("Match confirmado ✔");
     } catch (e: any) {
       toast(`Falha ao aceitar: ${e?.message || "erro"}`);
@@ -109,89 +85,81 @@ export default function ConvitesScreen() {
   }, []);
 
   const onDecline = useCallback((inviteId: string) => {
-    // TODO: endpoint de rejeitar/cancelar se/quando existir
+    // Quando existir endpoint de recusa, chamar aqui.
     setData((prev) => prev.filter((c) => c.id !== inviteId));
     toast("Convite removido");
   }, []);
 
   const filtered = useMemo(() => {
     if (!query) return data;
-    const q = norm(query);
-    return data.filter((c) => norm(c.name).includes(q));
+    return data.filter((c) => norm(c.name).includes(norm(query)));
   }, [data, query]);
 
   const keyExtractor = useCallback((it: ConviteItem) => it.id, []);
-  const contentStyle = useMemo(
-    () => ({ padding: GUTTER, paddingBottom: BOTTOM_INSET }),
-    []
-  );
+  const contentStyle = useMemo(() => ({ padding: GUTTER, paddingBottom: BOTTOM_INSET }), []);
 
-  const ListHeader = useCallback(() => {
-    return (
-      <View style={s.headerWrap}>
-        <View style={s.topbar}>
-          <Text style={s.title}>Convites</Text>
-          <View style={s.counter}>
-            <Feather name="inbox" size={14} color="#bdbdbd" />
-            <Text style={s.counterTxt}>
-              {filtered.length} {filtered.length === 1 ? "convite" : "convites"}
-            </Text>
-          </View>
-        </View>
-
-        <View style={s.searchWrap}>
-          <Feather name="search" size={18} color="#aaa" />
-          <TextInput
-            placeholder="Pesquisar por nome..."
-            placeholderTextColor="#888"
-            value={query}
-            onChangeText={setQuery}
-            style={s.searchInput}
-            returnKeyType="search"
-            autoCapitalize="words"
-            autoCorrect={false}
-            clearButtonMode="while-editing"
-          />
-          {query.length > 0 && (
-            <TouchableOpacity
-              onPress={() => setQuery("")}
-              style={s.clearBtn}
-              hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-            >
-              <Feather name="x" size={18} color="#bbb" />
-            </TouchableOpacity>
-          )}
+  const ListHeader = useCallback(() => (
+    <View style={s.headerWrap}>
+      <View style={s.topbar}>
+        <Text style={s.title}>Convites</Text>
+        <View style={s.counter}>
+          <Feather name="inbox" size={14} color="#bdbdbd" />
+          <Text style={s.counterTxt}>
+            {filtered.length} {filtered.length === 1 ? "convite" : "convites"}
+          </Text>
         </View>
       </View>
-    );
-  }, [filtered.length, query]);
+
+      <View style={s.searchWrap}>
+        <Feather name="search" size={18} color="#aaa" />
+        <TextInput
+          placeholder="Pesquisar por nome..."
+          placeholderTextColor="#888"
+          value={query}
+          onChangeText={setQuery}
+          style={s.searchInput}
+          returnKeyType="search"
+          autoCapitalize="words"
+          autoCorrect={false}
+          clearButtonMode="while-editing"
+        />
+        {!!query && (
+          <TouchableOpacity
+            onPress={() => setQuery("")}
+            style={s.clearBtn}
+            hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+          >
+            <Feather name="x" size={18} color="#bbb" />
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  ), [filtered.length, query]);
 
   const renderItem = useCallback(
-    ({ item }: { item: ConviteItem }) => {
-      return (
-        <View style={s.card}>
-          <View style={s.row}>
-            <Image source={{ uri: item.avatarUrl }} style={s.avatar} />
-            <View style={s.info}>
-              <Text numberOfLines={1} style={s.name}>{item.name}</Text>
-              {!!item.message && <Text numberOfLines={2} style={s.msg}>{item.message}</Text>}
-            </View>
-          </View>
-
-          <View style={s.actions}>
-            <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={() => onDecline(item.id)}>
-              <Feather name="x" size={16} color="#ff6b6b" />
-              <Text style={[s.btnGhostText, { color: "#ff6b6b" }]}>Recusar</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={[s.btn, s.btnPrimary]} onPress={() => onAccept(item.id)}>
-              <Feather name="check" size={16} color="#fff" />
-              <Text style={s.btnPrimaryText}>Aceitar</Text>
-            </TouchableOpacity>
+    ({ item }: { item: ConviteItem }) => (
+      <View style={s.card}>
+        <View style={s.row}>
+          <Image source={{ uri: item.avatarUrl }} style={s.avatar} />
+          <View style={s.info}>
+            <Text numberOfLines={1} style={s.name}>{item.name}</Text>
+            {!!item.message && <Text numberOfLines={2} style={s.msg}>{item.message}</Text>}
           </View>
         </View>
-      );
-    },
+
+        <View style={s.actions}>
+          <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={() => onDecline(item.id)}>
+            <Feather name="x" size={16} color="#ff6b6b" />
+            <Text style={[s.btnGhostText, { color: "#ff6b6b" }]}>Recusar</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={[s.btn, s.btnPrimary]} onPress={() => onAccept(item.id)}>
+            <Feather name="check" size={16} color="#fff" />
+            <Text style={s.btnPrimaryText}>Aceitar</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    ),
     [onAccept, onDecline]
   );
 
@@ -211,9 +179,7 @@ export default function ConvitesScreen() {
             </Text>
           </View>
         }
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#7B61FF" />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#7B61FF" />}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       />
