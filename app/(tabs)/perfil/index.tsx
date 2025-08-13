@@ -1,15 +1,22 @@
+// Perfil.tsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import {
-  View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image, Platform, ActivityIndicator,
+  View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image, Platform,
+  ActivityIndicator, Alert
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Picker } from "@react-native-picker/picker";
 import { getCurrentUser, getPerfilByEmail } from "../gateway/api";
 import { useFocusEffect } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { router } from "expo-router";
 
 const DEFAULT_AVATAR_URL =
-  "https://cdn-icons-png.flaticon.com/512/149/149071.png"; // imagem padrão de perfil vazio
+  "https://cdn-icons-png.flaticon.com/512/149/149071.png";
+
+// Ajuste este caminho se seu Login estiver em outra rota
+const LOGIN_ROUTE = "/(tabs)/fixed/login";
 
 export default function Perfil() {
   const [locked, setLocked] = useState(true);
@@ -45,6 +52,7 @@ export default function Perfil() {
     setBio(u?.bio ?? "");
     setAvatarUrl(u?.avatarUrl ?? undefined);
     setEmail(u?.email ?? "");
+    setTags(u?.tags ?? []);
   }
 
   function toImageSource(url?: string) {
@@ -73,6 +81,39 @@ export default function Perfil() {
     }
   }
 
+  // --- NOVO: Confirmação e logout ---
+  function confirmLogout() {
+    Alert.alert(
+      "Sair da conta",
+      "Deseja deslogar?",
+      [
+        { text: "Não", style: "cancel" },
+        { text: "Sim", style: "destructive", onPress: doLogout },
+      ],
+      { cancelable: true }
+    );
+  }
+
+  async function doLogout() {
+    try {
+      // Limpe aqui o que você usa para sessão/cache
+      await AsyncStorage.multiRemove(["authToken", "currentUser"]);
+      // Se tiver algo no seu gateway/api para limpar, chame aqui
+      // await clearAuth?.();
+
+      // Zera estado local para não “piscar” dados antigos
+      setNome(""); setTipo(""); setBio(""); setAvatarUrl(undefined);
+      setEmail(""); setTags([]);
+
+      // Volta pro Login
+      router.replace(LOGIN_ROUTE);
+    } catch (e) {
+      console.warn("Falha ao deslogar:", e);
+      router.replace(LOGIN_ROUTE);
+    }
+  }
+  // --- FIM NOVO ---
+
   if (loading) {
     return (
       <SafeAreaView style={s.container}>
@@ -96,6 +137,11 @@ export default function Perfil() {
             </TouchableOpacity>
             <TouchableOpacity onPress={toggleLock} style={s.iconBtn}>
               <Ionicons name={locked ? "lock-closed" : "lock-open"} size={20} color="#fff" />
+            </TouchableOpacity>
+
+            {/* NOVO: Botão Sair */}
+            <TouchableOpacity onPress={confirmLogout} style={[s.iconBtn, s.logoutBtn]}>
+              <Ionicons name="exit-outline" size={20} color="#fff" />
             </TouchableOpacity>
           </View>
         </View>
@@ -160,8 +206,10 @@ export default function Perfil() {
           </Picker>
         </View>
 
-        {/* Botões */}
-        <TouchableOpacity style={[s.button, s.subscribeButton]}>
+        <TouchableOpacity
+          style={[s.button, s.subscribeButton]}
+          onPress={() => router.push("/assinatura")}  // ou "/(tabs)/assinatura" se estiver dentro de um grupo (tabs)
+        >
           <Text style={s.buttonText}>Assinar Streaming</Text>
         </TouchableOpacity>
 
@@ -196,4 +244,7 @@ const s = StyleSheet.create({
   button: { backgroundColor: "#444", padding: 12, borderRadius: 8, alignItems: "center", marginTop: 10 },
   subscribeButton: { backgroundColor: "#0066ff" },
   buttonText: { color: "#fff", fontWeight: "bold" },
+
+  // NOVO
+  logoutBtn: { backgroundColor: "#b00020" },
 });
