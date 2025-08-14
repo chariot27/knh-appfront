@@ -82,7 +82,7 @@ export default function ContatosScreen() {
         avatarUrl:
           (inv.inviterAvatar && inv.inviterAvatar.length > 3)
             ? inv.inviterAvatar
-            : `https://i.pravatar.cc/200?u=${encodeURIComponent(inv.inviterId)}`,
+            : `https://cdn.pixabay.com/photo/2013/07/13/10/44/man-157699_1280.png`,
         status: "mutuo",
       }));
 
@@ -92,7 +92,7 @@ export default function ContatosScreen() {
         userId: inv.targetId,
         name: `Usuário ${inv.targetId.slice(0, 6)}`,
         phone: "",
-        avatarUrl: `https://i.pravatar.cc/200?u=${encodeURIComponent(inv.targetId)}`,
+        avatarUrl: `https://cdn.pixabay.com/photo/2013/07/13/10/44/man-157699_1280.png`,
         status: "pendente",
       }));
 
@@ -106,7 +106,7 @@ export default function ContatosScreen() {
             userId: otherId,
             name: `Usuário ${otherId.slice(0, 6)}`,
             phone: "",
-            avatarUrl: `https://i.pravatar.cc/200?u=${encodeURIComponent(otherId)}`,
+            avatarUrl: `https://cdn.pixabay.com/photo/2013/07/13/10/44/man-157699_1280.png`,
             status: "mutuo",
           } as ContactItem;
         });
