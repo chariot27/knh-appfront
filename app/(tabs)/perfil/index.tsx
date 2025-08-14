@@ -172,25 +172,8 @@ export default function Perfil() {
           multiline
         />
 
-        {/* Tema */}
-        <Text style={s.label}>Tema</Text>
-        <View style={s.pickerWrapper}>
-          <Picker
-            selectedValue={theme}
-            enabled={!locked}
-            onValueChange={(value) => setTheme(value)}
-            dropdownIconColor="#fff"
-            style={s.picker}
-            mode={Platform.OS === "android" ? "dropdown" : undefined}
-          >
-            <Picker.Item label="Claro" value="claro" color={itemColor} />
-            <Picker.Item label="Escuro" value="escuro" color={itemColor} />
-            <Picker.Item label="Azul" value="azul" color={itemColor} />
-          </Picker>
-        </View>
-
         {/* Filtro de feed */}
-        <Text style={s.label}>O que deseja ver no feed?</Text>
+        <Text style={s.label}>Em breve</Text>
         <View style={s.pickerWrapper}>
           <Picker
             selectedValue={feedFilter}
@@ -200,9 +183,7 @@ export default function Perfil() {
             style={s.picker}
             mode={Platform.OS === "android" ? "dropdown" : undefined}
           >
-            <Picker.Item label="Profissionais" value="profissionais" color={itemColor} />
-            <Picker.Item label="Consultores" value="consultores" color={itemColor} />
-            <Picker.Item label="Ambos" value="ambos" color={itemColor} />
+            <Picker.Item label="Embreve" value="Em breve" color={itemColor} />
           </Picker>
         </View>
 

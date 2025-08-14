@@ -1,19 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, Image, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, ScrollView } from "react-native";
 import { router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons"; // ⬅️ novo
+import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import {
   createPixCheckout,
   getPaymentStatus,
+  verifyPayment,             // força verificação no backend/PSP
   getSubscriptionStatus,
   cancelSubscriptionAtPeriodEnd,
+  confirmPaymentManual,      // DEV: simula o webhook
   getUserIdFromToken,
   initCurrentUserFromToken,
   type CheckoutResponse,
   type PaymentStatusResponse,
   type SubscriptionDTO,
+  type VerifyResponse,
 } from "../gateway/api";
+
+const IS_DEV = typeof __DEV__ === "boolean" ? __DEV__ : false;
+const APPROVAL_NOTICE =
+  "Após a confirmação do pagamento pelo banco, seu perfil será analisado e poderá levar até 24 horas para ser aprovado. Caso passe de 24 horas, solicite novamente ou peça estorno pelo WhatsApp 54996321181.";
 
 function fmtCountdown(expiresAt?: string) {
   if (!expiresAt) return "";
@@ -56,7 +63,7 @@ export default function AssinaturaScreen() {
   const loadSub = useCallback(async () => {
     try {
       const uid = await userIdPromise;
-      const s = await getSubscriptionStatus(uid);
+      const s = await getSubscriptionStatus(uid); // atualiza cache local também
       setSub(s);
     } catch (e: any) {
       Alert.alert("Assinatura", e?.message || "Não foi possível carregar o status.");
@@ -82,19 +89,44 @@ export default function AssinaturaScreen() {
       const c = await createPixCheckout(uid);
       setCheckout(c);
 
+      // ⚠️ Aviso imediato sobre aprovação em até 24h
+      Alert.alert("Prazo de aprovação", APPROVAL_NOTICE);
+
+      // limpa polling anterior
       if (pollRef.current !== null) { clearInterval(pollRef.current); pollRef.current = null; }
+
+      // consulta imediata 1x
+      verifyPayment(c.txid).then((v: VerifyResponse) => {
+        setStatus({ txid: v.txid, paymentStatus: v.paymentStatus, subscriptionStatus: v.subscriptionStatus });
+      }).catch(() => {
+        getPaymentStatus(c.txid).then(setStatus).catch(() => {});
+      });
+
+      // inicia polling
       pollRef.current = setInterval(async () => {
         try {
-          const s = await getPaymentStatus(c.txid);
-          setStatus(s);
-          if (["CONFIRMED", "FAILED", "EXPIRED"].includes(s.paymentStatus)) {
+          const v = await verifyPayment(c.txid);
+          setStatus({ txid: v.txid, paymentStatus: v.paymentStatus, subscriptionStatus: v.subscriptionStatus });
+          if (["CONFIRMED", "FAILED", "EXPIRED"].includes(v.paymentStatus)) {
             if (pollRef.current !== null) { clearInterval(pollRef.current); pollRef.current = null; }
-            if (s.paymentStatus === "CONFIRMED") {
-              const updated = await getSubscriptionStatus(await userIdPromise);
+            if (v.paymentStatus === "CONFIRMED") {
+              const updated = await getSubscriptionStatus(await userIdPromise); // atualiza cache
               setSub(updated);
             }
           }
-        } catch { /* silêncio */ }
+        } catch {
+          try {
+            const s = await getPaymentStatus(c.txid);
+            setStatus(s);
+            if (["CONFIRMED", "FAILED", "EXPIRED"].includes(s.paymentStatus)) {
+              if (pollRef.current !== null) { clearInterval(pollRef.current); pollRef.current = null; }
+              if (s.paymentStatus === "CONFIRMED") {
+                const updated = await getSubscriptionStatus(await userIdPromise); // atualiza cache
+                setSub(updated);
+              }
+            }
+          } catch { /* silêncio */ }
+        }
       }, 5000);
     } catch (e: any) {
       Alert.alert("Checkout PIX", e?.message || "Falha ao criar a cobrança.");
@@ -122,6 +154,25 @@ export default function AssinaturaScreen() {
       Alert.alert("PIX", "Não foi possível copiar o código.");
     }
   }, [checkout]);
+
+  // DEV helper
+  const confirmDev = useCallback(async () => {
+    if (!checkout?.txid) return;
+    try {
+      await confirmPaymentManual(checkout.txid);
+      const v = await verifyPayment(checkout.txid);
+      setStatus({ txid: v.txid, paymentStatus: v.paymentStatus, subscriptionStatus: v.subscriptionStatus });
+      if (v.paymentStatus === "CONFIRMED") {
+        const updated = await getSubscriptionStatus(await userIdPromise);
+        setSub(updated);
+        Alert.alert("PIX", "Pagamento confirmado (DEV).");
+      } else {
+        Alert.alert("PIX", `Status atual: ${v.paymentStatus}`);
+      }
+    } catch (e: any) {
+      Alert.alert("PIX", e?.message || "Falha ao confirmar manualmente.");
+    }
+  }, [checkout, userIdPromise]);
 
   const expired = useMemo(() => {
     if (!checkout?.expiresAt) return false;
@@ -169,6 +220,12 @@ export default function AssinaturaScreen() {
 
           {!!checkout && (
             <View style={[styles.card, styles.centerItems, styles.cardShadow]}>
+              {/* 🔔 Aviso fixo de aprovação em até 24h */}
+              <View style={styles.infoBox}>
+                <Ionicons name="information-circle-outline" size={18} color={TEXT} />
+                <Text style={styles.infoText}>{APPROVAL_NOTICE}</Text>
+              </View>
+
               <Text style={styles.label}>Pague com PIX (QR)</Text>
               <Image style={styles.qr} source={{ uri: `data:image/png;base64,${checkout.qrPngBase64}` }} />
               <TouchableOpacity style={[styles.secondaryBtn, styles.fullBtn]} onPress={copyPayload}>
@@ -209,7 +266,6 @@ export default function AssinaturaScreen() {
             <Text style={styles.linkText}>Atualizar status</Text>
           </TouchableOpacity>
 
-          {/* Botão Voltar com estilo aprimorado */}
           <View style={styles.footer}>
             <TouchableOpacity activeOpacity={0.9} onPress={() => router.back()} style={styles.backWrap}>
               <View style={styles.backBtn}>
@@ -320,6 +376,21 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" },
   centerRow: { justifyContent: "center", alignSelf: "center" },
 
+  // Banner de informação
+  infoBox: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    backgroundColor: "#172033",
+    borderLeftWidth: 4,
+    borderLeftColor: ACCENT_SOFT,
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 10,
+  },
+  infoText: { color: TEXT, flex: 1, fontSize: 12, lineHeight: 16 },
+
   badgePending: {
     backgroundColor: "#172033",
     borderLeftWidth: 4,
@@ -363,11 +434,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  // ⬇️ Novo botão "pill" com glow e ícone
   backWrap: {
     padding: 2,
     borderRadius: 999,
-    backgroundColor: "rgba(124,58,237,0.35)", // leve glow violeta
+    backgroundColor: "rgba(124,58,237,0.35)",
   },
   backBtn: {
     flexDirection: "row",

@@ -12,17 +12,34 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { Feather } from "@expo/vector-icons";
 import { Video, ResizeMode, Audio } from "expo-av";
+import { router } from "expo-router";
 
-// ⛓️ Helpers da API — caminho relativo a partir de app/(tabs)/video/
-// se seu projeto usa alias "@/lib/api", pode trocar.
-import { uploadVideo } from "../gateway/api";
+import { uploadVideo, isSubscriptionActiveCached } from "../gateway/api";
+
+function BlockedInline() {
+  return (
+    <View style={b.wrap}>
+      <Feather name="lock" size={24} color="#bbb" />
+      <Text style={b.title}>Recurso Premium</Text>
+      <Text style={b.msg}>Assine o Premium para publicar vídeos.</Text>
+      <TouchableOpacity style={b.btn} onPress={() => router.push("/assinatura")}>
+        <Feather name="zap" size={16} color="#fff" />
+        <Text style={b.btnText}>Assinar Premium</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
 
 export default function AddVideoScreen() {
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [picking, setPicking] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [uri, setUri] = useState<string | null>(null);
   const [caption, setCaption] = useState("");
+
+  useEffect(() => { (async () => setAllowed(await isSubscriptionActiveCached()))(); }, []);
 
   // permissões + áudio
   useEffect(() => {
@@ -38,6 +55,7 @@ export default function AddVideoScreen() {
   }, []);
 
   const pickVideo = useCallback(async () => {
+    if (!allowed) return Alert.alert("Premium", "Assine o Premium para selecionar e publicar vídeos.");
     if (hasPermission === false) {
       Alert.alert("Permissão necessária", "Autorize o acesso à galeria para escolher vídeos.");
       return;
@@ -57,7 +75,7 @@ export default function AddVideoScreen() {
     } finally {
       setPicking(false);
     }
-  }, [hasPermission]);
+  }, [hasPermission, allowed]);
 
   const clearSelection = useCallback(() => {
     setUri(null);
@@ -65,6 +83,7 @@ export default function AddVideoScreen() {
   }, []);
 
   const publish = useCallback(async () => {
+    if (!allowed) return Alert.alert("Premium", "Assine o Premium para publicar vídeos.");
     if (!uri) return;
     try {
       setPublishing(true);
@@ -82,7 +101,12 @@ export default function AddVideoScreen() {
     } finally {
       setPublishing(false);
     }
-  }, [uri, caption, clearSelection]);
+  }, [uri, caption, clearSelection, allowed]);
+
+  if (allowed === null) {
+    return <View style={{flex:1,alignItems:"center",justifyContent:"center"}}><ActivityIndicator color="#7B61FF" /></View>;
+  }
+  if (!allowed) return <BlockedInline />;
 
   return (
     <SafeAreaView style={s.screen} edges={["top", "left", "right"]}>
@@ -99,7 +123,6 @@ export default function AddVideoScreen() {
         )}
       </View>
 
-      {/* Seleção / preview local */}
       {!uri ? (
         <TouchableOpacity
           style={s.pickBox}
@@ -132,7 +155,6 @@ export default function AddVideoScreen() {
         </View>
       )}
 
-      {/* Legenda = descricao */}
       <View style={s.captionWrap}>
         <Text style={s.label}>Legenda (opcional)</Text>
         <TextInput
@@ -145,7 +167,6 @@ export default function AddVideoScreen() {
         />
       </View>
 
-      {/* Ações */}
       <View style={s.actions}>
         <TouchableOpacity
           style={[s.btn, s.btnPrimary, !uri && s.btnDisabled]}
@@ -173,6 +194,14 @@ export default function AddVideoScreen() {
     </SafeAreaView>
   );
 }
+
+const b = StyleSheet.create({
+  wrap: { flex:1, alignItems:"center", justifyContent:"center", paddingHorizontal:24, gap:8, backgroundColor:"#000" },
+  title: { color:"#fff", fontSize:18, fontWeight:"800" },
+  msg: { color:"#bdbdbd", fontSize:13, textAlign:"center" },
+  btn: { backgroundColor:"#6f63ff", borderRadius:12, paddingHorizontal:16, paddingVertical:10, flexDirection:"row", gap:6, alignItems:"center" },
+  btnText: { color:"#fff", fontWeight:"800" },
+});
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000", paddingHorizontal: 16 },

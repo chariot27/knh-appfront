@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View, Text, Image, StyleSheet, FlatList, Dimensions,
-  TouchableOpacity, RefreshControl, Platform, ToastAndroid, Alert, TextInput,
+  TouchableOpacity, RefreshControl, Platform, ToastAndroid, Alert, TextInput, ActivityIndicator,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
+import { router } from "expo-router";
 import {
   InviteDTO, InviteStatus, acceptInvite,
-  getUserIdFromToken, initCurrentUserFromToken, listInvitesReceived,
+  getUserIdFromToken, initCurrentUserFromToken, listInvitesReceived, isSubscriptionActiveCached,
 } from "../gateway/api";
 
 const { width } = Dimensions.get("window");
@@ -28,10 +29,27 @@ type ConviteItem = {
 const norm = (t: string) =>
   t.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().trim();
 
+function BlockedInline() {
+  return (
+    <View style={b.wrap}>
+      <Feather name="lock" size={24} color="#bbb" />
+      <Text style={b.title}>Recurso Premium</Text>
+      <Text style={b.msg}>Assine o Premium para ver seus convites.</Text>
+      <TouchableOpacity style={b.btn} onPress={() => router.push("/assinatura")}>
+        <Feather name="zap" size={16} color="#fff" />
+        <Text style={b.btnText}>Assinar Premium</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 export default function ConvitesScreen() {
+  const [allowed, setAllowed] = useState<boolean | null>(null);
   const [data, setData] = useState<ConviteItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
+
+  useEffect(() => { (async () => setAllowed(await isSubscriptionActiveCached()))(); }, []);
 
   const toast = (m: string) =>
     Platform.OS === "android" ? ToastAndroid.show(m, ToastAndroid.SHORT) : Alert.alert(m);
@@ -47,7 +65,6 @@ export default function ConvitesScreen() {
       }
       if (!meId) throw new Error("Usuário não autenticado.");
 
-      // RECEBIDOS PENDING — do backend (se existir) ou do cache local
       const rows: InviteDTO[] = await listInvitesReceived(meId, "PENDING" as InviteStatus);
 
       const items: ConviteItem[] = rows.map((inv) => ({
@@ -71,13 +88,13 @@ export default function ConvitesScreen() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
-  const onRefresh = useCallback(load, [load]);
+  useEffect(() => { if (allowed) load(); }, [allowed, load]);
+  const onRefresh = useCallback(() => { if (allowed) load(); }, [allowed, load]);
 
   const onAccept = useCallback(async (inviteId: string) => {
     try {
-      await acceptInvite(inviteId); // atualiza banco + cache local
-      setData((prev) => prev.filter((c) => c.id !== inviteId)); // sai da fila
+      await acceptInvite(inviteId);
+      setData((prev) => prev.filter((c) => c.id !== inviteId));
       toast("Match confirmado ✔");
     } catch (e: any) {
       toast(`Falha ao aceitar: ${e?.message || "erro"}`);
@@ -85,7 +102,6 @@ export default function ConvitesScreen() {
   }, []);
 
   const onDecline = useCallback((inviteId: string) => {
-    // Quando existir endpoint de recusa, chamar aqui.
     setData((prev) => prev.filter((c) => c.id !== inviteId));
     toast("Convite removido");
   }, []);
@@ -95,82 +111,77 @@ export default function ConvitesScreen() {
     return data.filter((c) => norm(c.name).includes(norm(query)));
   }, [data, query]);
 
-  const keyExtractor = useCallback((it: ConviteItem) => it.id, []);
-  const contentStyle = useMemo(() => ({ padding: GUTTER, paddingBottom: BOTTOM_INSET }), []);
-
-  const ListHeader = useCallback(() => (
-    <View style={s.headerWrap}>
-      <View style={s.topbar}>
-        <Text style={s.title}>Convites</Text>
-        <View style={s.counter}>
-          <Feather name="inbox" size={14} color="#bdbdbd" />
-          <Text style={s.counterTxt}>
-            {filtered.length} {filtered.length === 1 ? "convite" : "convites"}
-          </Text>
-        </View>
-      </View>
-
-      <View style={s.searchWrap}>
-        <Feather name="search" size={18} color="#aaa" />
-        <TextInput
-          placeholder="Pesquisar por nome..."
-          placeholderTextColor="#888"
-          value={query}
-          onChangeText={setQuery}
-          style={s.searchInput}
-          returnKeyType="search"
-          autoCapitalize="words"
-          autoCorrect={false}
-          clearButtonMode="while-editing"
-        />
-        {!!query && (
-          <TouchableOpacity
-            onPress={() => setQuery("")}
-            style={s.clearBtn}
-            hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
-          >
-            <Feather name="x" size={18} color="#bbb" />
-          </TouchableOpacity>
-        )}
-      </View>
-    </View>
-  ), [filtered.length, query]);
-
-  const renderItem = useCallback(
-    ({ item }: { item: ConviteItem }) => (
-      <View style={s.card}>
-        <View style={s.row}>
-          <Image source={{ uri: item.avatarUrl }} style={s.avatar} />
-          <View style={s.info}>
-            <Text numberOfLines={1} style={s.name}>{item.name}</Text>
-            {!!item.message && <Text numberOfLines={2} style={s.msg}>{item.message}</Text>}
-          </View>
-        </View>
-
-        <View style={s.actions}>
-          <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={() => onDecline(item.id)}>
-            <Feather name="x" size={16} color="#ff6b6b" />
-            <Text style={[s.btnGhostText, { color: "#ff6b6b" }]}>Recusar</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={[s.btn, s.btnPrimary]} onPress={() => onAccept(item.id)}>
-            <Feather name="check" size={16} color="#fff" />
-            <Text style={s.btnPrimaryText}>Aceitar</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    ),
-    [onAccept, onDecline]
-  );
+  if (allowed === null) {
+    return <View style={{flex:1,alignItems:"center",justifyContent:"center"}}><ActivityIndicator color="#7B61FF" /></View>;
+  }
+  if (!allowed) return <BlockedInline />;
 
   return (
     <View style={s.screen}>
       <FlatList
         data={filtered}
-        keyExtractor={keyExtractor}
-        renderItem={renderItem}
-        contentContainerStyle={contentStyle}
-        ListHeaderComponent={ListHeader}
+        keyExtractor={(it: ConviteItem) => it.id}
+        renderItem={({ item }) => (
+          <View style={s.card}>
+            <View style={s.row}>
+              <Image source={{ uri: item.avatarUrl }} style={s.avatar} />
+              <View style={s.info}>
+                <Text numberOfLines={1} style={s.name}>{item.name}</Text>
+                {!!item.message && <Text numberOfLines={2} style={s.msg}>{item.message}</Text>}
+              </View>
+            </View>
+
+            <View style={s.actions}>
+              <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={() => onDecline(item.id)}>
+                <Feather name="x" size={16} color="#ff6b6b" />
+                <Text style={[s.btnGhostText, { color: "#ff6b6b" }]}>Recusar</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={[s.btn, s.btnPrimary]} onPress={() => onAccept(item.id)}>
+                <Feather name="check" size={16} color="#fff" />
+                <Text style={s.btnPrimaryText}>Aceitar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+        contentContainerStyle={{ padding: GUTTER, paddingBottom: BOTTOM_INSET }}
+        ListHeaderComponent={(
+          <View style={s.headerWrap}>
+            <View style={s.topbar}>
+              <Text style={s.title}>Convites</Text>
+              <View style={s.counter}>
+                <Feather name="inbox" size={14} color="#bdbdbd" />
+                <Text style={s.counterTxt}>
+                  {filtered.length} {filtered.length === 1 ? "convite" : "convites"}
+                </Text>
+              </View>
+            </View>
+
+            <View style={s.searchWrap}>
+              <Feather name="search" size={18} color="#aaa" />
+              <TextInput
+                placeholder="Pesquisar por nome..."
+                placeholderTextColor="#888"
+                value={query}
+                onChangeText={setQuery}
+                style={s.searchInput}
+                returnKeyType="search"
+                autoCapitalize="words"
+                autoCorrect={false}
+                clearButtonMode="while-editing"
+              />
+              {!!query && (
+                <TouchableOpacity
+                  onPress={() => setQuery("")}
+                  style={s.clearBtn}
+                  hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                >
+                  <Feather name="x" size={18} color="#bbb" />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
         ListEmptyComponent={
           <View style={s.empty}>
             <Feather name="inbox" size={20} color="#666" />
@@ -186,6 +197,14 @@ export default function ConvitesScreen() {
     </View>
   );
 }
+
+const b = StyleSheet.create({
+  wrap: { flex:1, alignItems:"center", justifyContent:"center", paddingHorizontal:24, gap:8, backgroundColor:"#000" },
+  title: { color:"#fff", fontSize:18, fontWeight:"800" },
+  msg: { color:"#bdbdbd", fontSize:13, textAlign:"center" },
+  btn: { backgroundColor:"#6f63ff", borderRadius:12, paddingHorizontal:16, paddingVertical:10, flexDirection:"row", gap:6, alignItems:"center" },
+  btnText: { color:"#fff", fontWeight:"800" },
+});
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000" },
