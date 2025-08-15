@@ -69,8 +69,6 @@ async function withRetry<T>(
   } = {}
 ): Promise<T> {
   let attempt = 0;
-  // primeira tentativa + N retries
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       return await fn();
@@ -108,7 +106,6 @@ export default function AssinaturaScreen() {
 
     setSubscriptionId(sid);
 
-    // Só consulta backend se ainda não está ACTIVE/TRIALING pelo cache
     if (!cachedActive && status !== "TRIALING") {
       try {
         const st = await withRetry(() => getSubscriptionStatus(sid), { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 });
@@ -132,8 +129,6 @@ export default function AssinaturaScreen() {
       const uid = getUserIdFromToken();
       const email = await getLastLoginEmail();
 
-      // OBS: teu tipo pmMode aceita só "auto" | "boleto".
-      // Se quiser diferenciar no backend, amplia em api.tsx para incluir "gpay".
       const sub = await withRetry(
         () =>
           startStripeSubscription({
@@ -300,15 +295,17 @@ function PaymentSheetRunner({
         return;
       }
 
-      // 1) init PaymentSheet (com Google Pay ligado no Android)
+      // 1) init PaymentSheet (com Google Pay ligado no Android + customer)
       try {
         await withRetry(
           async () => {
             const initRes = await initPaymentSheet({
               merchantDisplayName: MERCHANT_NAME,
+              customerId: sub.customerId,
+              customerEphemeralKeySecret: sub.ephemeralKeySecret,
               googlePay: {
                 merchantCountryCode: MERCHANT_COUNTRY,
-                testEnv: __DEV__,
+                testEnv: !!__DEV__,
               },
               ...(hasPI
                 ? { paymentIntentClientSecret: sub.paymentIntentClientSecret! }
@@ -324,7 +321,7 @@ function PaymentSheetRunner({
         return;
       }
 
-      // 2) Apresenta a PaymentSheet (no Android o botão do Google Pay aparece dentro dela)
+      // 2) Apresenta a PaymentSheet
       try {
         await withRetry(
           async () => {
