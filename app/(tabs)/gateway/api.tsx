@@ -4,11 +4,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 let __b64decode: ((s: string) => string) | undefined;
 try { const mod = require("base-64"); __b64decode = mod?.decode; } catch { __b64decode = undefined; }
 if (typeof globalThis.atob === "undefined") {
-  if (__b64decode) { // @ts-ignore
-    globalThis.atob = __b64decode;
-  } else {
-    console.warn("[api.ts] 'atob' ausente e pacote 'base-64' não instalado. JWT não será decodificado.");
-  }
+  if (__b64decode) { /* @ts-ignore */ globalThis.atob = __b64decode; }
+  else { console.warn("[api.ts] 'atob' ausente e pacote 'base-64' não instalado. JWT não será decodificado."); }
 }
 
 /* ========== Base/rotas/helpers ========== */
@@ -38,15 +35,10 @@ export const routes = {
     sentInvites:     { path: "/api/matches/invites/sent",     method: "GET"  } as RouteEntry,
     receivedInvites: { path: "/api/matches/invites/received", method: "GET"  } as RouteEntry,
   },
-  payments: {
-    checkout: { path: "/api/payments/checkout",      method: "POST" } as RouteEntry,
-    status:   { path: "/api/payments/status/:txid",  method: "GET"  } as RouteEntry,
-    confirm:  { path: "/api/payments/confirm/:txid", method: "POST" } as RouteEntry, // DEV
-    verify:   { path: "/api/payments/verify/:txid",  method: "POST" } as RouteEntry, // força checagem no backend/PSP
-  },
-  subscriptions: {
-    status:            { path: "/api/subscriptions/:userId/status",               method: "GET"  } as RouteEntry,
-    cancelAtPeriodEnd: { path: "/api/subscriptions/:userId/cancel-at-period-end", method: "POST" } as RouteEntry,
+  billing: {
+    subscribe:  { path: "/api/billing/subscribe",           method: "POST" } as RouteEntry,
+    statusById: { path: "/api/billing/subscriptions/:id",   method: "GET"  } as RouteEntry,
+    changePlan: { path: "/api/billing/change-plan",         method: "POST" } as RouteEntry,
   }
 } as const;
 
@@ -109,18 +101,17 @@ const timeouts: Record<string, number> = {
   "POST /api/users/register": 45_000,
   "POST /api/videos/upload": 5 * 60_000,
   "POST /api/videos/:id/reprocess": 30_000,
-  "GET /api/payments/status/:txid": 20_000,
-  "POST /api/payments/verify/:txid": 25_000,
-  "POST /api/payments/checkout": 35_000,
-  "GET /api/subscriptions/:userId/status": 20_000,
-  "POST /api/subscriptions/:userId/cancel-at-period-end": 25_000,
+
+  // Billing
+  "POST /api/billing/subscribe": 35_000,
+  "GET /api/billing/subscriptions/:id": 20_000,
+  "POST /api/billing/change-plan": 20_000,
 };
 
 const retries: Record<string, number> = {
   "GET": 2,
   "POST": 1,
   "POST /api/users/login": 2,
-  "POST /api/payments/verify/:txid": 3,
 };
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -164,41 +155,27 @@ export function friendlyMessage(e: Partial<ApiError> | any): string {
   return "Não foi possível concluir a ação agora. Tente novamente.";
 }
 
-/* ========== DEBUG HTTP (logs sucintos) ========== */
+/* ========== DEBUG HTTP ========== */
 let __reqSeq = 0;
 const nextReqId = (p: string) => { __reqSeq = (__reqSeq + 1) % 1_000_000; return `${p}-${Date.now()}-${__reqSeq}`; };
 const redactHeaders = (h?: Record<string, any>) => { if (!h) return h; const o = { ...h }; const k = Object.keys(o).find(x => x.toLowerCase() === "authorization"); if (k && typeof o[k] === "string") o[k] = "Bearer ****"; return o; };
-const toPrintableBody = (b: any) => { try { return typeof b === "string" ? b : JSON.stringify(b); } catch { return String(b); } };
 function logHttp(tag: "REQ" | "RES" | "ERR", payload: any) {
   if (!DEBUG_HTTP) return; try { console.log(`[HTTP][${tag}]`, JSON.stringify(payload, null, 2)); } catch { console.log(`[HTTP][${tag}]`, payload); }
 }
 
-/* ========== DEBUG DE PAGAMENTOS (seguro) ========== */
-const DEBUG_PAYMENTS = true; // habilita logs de pagamentos/assinaturas
-
-const SENSITIVE_KEYS_RE = /^(authorization|token|qrPngBase64|copiaECola)$/i;
-function _redactor(k: string, v: any) {
-  if (SENSITIVE_KEYS_RE.test(k)) {
-    const key = k.toLowerCase();
-    if (key === "qrpngbase64") return `[base64:${typeof v === "string" ? v.length : 0} bytes]`;
-    if (key === "copiaecola")  return typeof v === "string" ? `${v.slice(0, 12)}…${v.slice(-12)}` : v;
-    return "****";
-  }
-  if (typeof v === "string" && v.length > 600) return `${v.slice(0, 300)}…${v.slice(-80)}`;
-  return v;
-}
-function _safeClone<T>(obj: T): T {
-  try { return JSON.parse(JSON.stringify(obj, _redactor)); } catch { return obj; }
-}
-function logPay(phase: "REQ" | "RES" | "ERR", payload: any) {
-  if (!DEBUG_PAYMENTS) return;
-  try { console.log(`[PAY][${phase}]`, JSON.stringify(_safeClone(payload), null, 2)); }
-  catch { console.log(`[PAY][${phase}]`, payload); }
+/* ========== DEBUG BILLING (seguro) ========== */
+const DEBUG_BILLING = true;
+function logBill(phase: "REQ" | "RES" | "ERR", payload: any) {
+  if (!DEBUG_BILLING) return;
+  try { console.log(`[BILL][${phase}]`, JSON.stringify(payload, null, 2)); }
+  catch { console.log(`[BILL][${phase}]`, payload); }
 }
 
 /* ========== Auth token & user cache ========== */
 let _authToken: string | null = null;
 const AUTH_KEY = "AUTH_TOKEN";
+/** onde persistimos o e-mail usado no login */
+const LOGIN_EMAIL_KEY = "LOGIN_EMAIL_LAST";
 
 export type PerfilResponse = {
   nome: string;
@@ -230,9 +207,11 @@ export function getAuthToken() { return _authToken; }
 export function clearAuthToken() {
   _authToken = null; _currentUser = null; _perfilCache.clear();
   AsyncStorage.removeItem(AUTH_KEY).catch(() => {});
-  // limpa cache de assinatura ao sair
+  // limpa caches
   _subsCacheMemory = null;
   AsyncStorage.removeItem(SUBS_CACHE_KEY).catch(() => {});
+  AsyncStorage.removeItem(SUBS_ID_BY_USER_KEY).catch(() => {});
+  AsyncStorage.removeItem(LOGIN_EMAIL_KEY).catch(() => {});
 }
 export function setCurrentUser(u: (PerfilResponse | User) | null) { _currentUser = u; }
 export function getCurrentUser() { return _currentUser; }
@@ -244,6 +223,15 @@ export async function persistAuthToken(token: string | null) {
 }
 export async function restoreAuthToken() { const t = await AsyncStorage.getItem(AUTH_KEY); _authToken = normalizeToken(t); return _authToken; }
 export async function initAuthOnBoot() { await restoreAuthToken(); try { if (_authToken) await initCurrentUserFromToken(); } catch {} }
+
+/* ===== Email do login (novo) ===== */
+export async function saveLoginEmail(email: string): Promise<void> {
+  const norm = email?.trim().toLowerCase() || "";
+  try { await AsyncStorage.setItem(LOGIN_EMAIL_KEY, norm); } catch {}
+}
+export async function getLastLoginEmail(): Promise<string | null> {
+  try { return (await AsyncStorage.getItem(LOGIN_EMAIL_KEY)) || null; } catch { return null; }
+}
 
 /* ========== HTTP utils ========== */
 type RequestOpts = { timeoutMs?: number; retries?: number; auth?: boolean; idempotentKey?: string };
@@ -281,7 +269,7 @@ export function getUserIdFromToken(): string | null {
   } catch { return null; }
 }
 
-/* ---- Core com retries, backoff, coalescência e mensagens amigáveis ---- */
+/* ---- Core com retries, backoff, coalescência ---- */
 async function coreRequest<T>(method: HttpMethod, url: string, init: RequestInit & { timeoutMs?: number }, opt: RequestOpts = {}): Promise<T> {
   const keyBase = `${method} ${url}`;
   const timeout = opt.timeoutMs ?? timeouts[keyBase] ?? timeouts[method + " " + url.split("?")[0]] ?? DEFAULT_TIMEOUT;
@@ -296,7 +284,7 @@ async function coreRequest<T>(method: HttpMethod, url: string, init: RequestInit
     const headers: Record<string, string> = { Accept: "application/json", "X-Requested-With": "XMLHttpRequest", ...(init.headers as any) };
     if (useAuth && _authToken) headers.Authorization = `Bearer ${_authToken}`;
 
-    const reqId = nextReqId(method);
+    const reqId = nextReqId("HTTP");
     const attemptMax = Math.max(1, maxRetries + 1);
     let lastErr: any = null;
 
@@ -306,7 +294,7 @@ async function coreRequest<T>(method: HttpMethod, url: string, init: RequestInit
         logHttp("REQ", { reqId, method, url, headers: redactHeaders(headers) });
         const res = await fetchWithTimeout(url, { ...init, method, headers, timeoutMs: timeout });
         const text = await res.text().catch(() => "");
-        logHttp("RES", { reqId, url, status: res.status, ms: Date.now() - t0, body: DEBUG_HTTP ? text?.slice(0, 2000) : undefined });
+        logHttp("RES", { reqId, url, status: res.status, ms: Date.now() - t0 });
 
         const parsed: any = (() => { try { return text ? JSON.parse(text) : {}; } catch { return text || {}; } })();
         if (!res.ok) {
@@ -334,15 +322,13 @@ async function coreRequest<T>(method: HttpMethod, url: string, init: RequestInit
   finally { if (inflightKey) inflight.delete(inflightKey); }
 }
 
-async function getJson<TRes>(url: string, opts: RequestOpts = {}): Promise<TRes> {
+async function getJson<TRes>(url: string, opts: RequestOpts = {}) : Promise<TRes> {
   return coreRequest<TRes>("GET", url, {}, opts);
 }
-
 async function postMultipart<TRes>(url: string, form: FormData, opts: RequestOpts = {}) {
   const headers: Record<string, string> = { Accept: "application/json" };
   return coreRequest<TRes>("POST", url, { body: form, headers }, opts);
 }
-
 async function postJson<TRes>(url: string, body: any, opts: RequestOpts = {}) {
   const headers: Record<string, string> = { Accept: "application/json", "Content-Type": "application/json" };
   return coreRequest<TRes>("POST", url, { body: body ? JSON.stringify(body) : undefined, headers }, opts);
@@ -363,11 +349,7 @@ export async function registerUser(payload: RegisterPayload, file?: UploadFile) 
   form.append("data", JSON.stringify(payload) as any);
   if (file?.uri) {
     if (!/^(file|content|ph):/i.test(file.uri)) throw toApiError(new Error("Arquivo inválido"));
-    form.append("avatar", {
-      uri: file.uri,
-      name: file.name || "upload",
-      type: file.type || "application/octet-stream",
-    } as any);
+    form.append("avatar", { uri: file.uri, name: file.name || "upload", type: file.type || "application/octet-stream" } as any);
   }
   try {
     return await postMultipart<any>(url, form, { timeoutMs: timeouts["POST /api/users/register"], retries: 1, auth: false });
@@ -383,6 +365,10 @@ export async function loginUser(payload: LoginPayload): Promise<LoginResponse> {
     if (!token) throw toApiError(new Error("Resposta de login inválida"));
     setAuthToken(token);
     await persistAuthToken(token);
+
+    // salva o e-mail do login (para ser usado no billing)
+    if (payload?.email) await saveLoginEmail(payload.email);
+
     return { token };
   } catch (e: any) {
     const er = toApiError(e);
@@ -476,6 +462,7 @@ export async function reprocessVideo(id: string, waitSeconds = 10): Promise<Vide
   catch (e) { throw toApiError(e); }
 }
 
+/* (outros métodos prontos) */
 async function preflightUrl(url: string, timeoutMs = 7000): Promise<boolean> {
   try {
     const ctrl = new AbortController();
@@ -485,7 +472,6 @@ async function preflightUrl(url: string, timeoutMs = 7000): Promise<boolean> {
     return res.ok;
   } catch { return false; }
 }
-
 const FEED_CACHE_KEY = "FEED_CACHE_V2";
 const FEED_TTL_MS = 15_000;
 export async function fetchFeedReady(limit = 12, opts?: { preflight?: boolean }): Promise<VideoDTO[]> {
@@ -519,24 +505,8 @@ export async function fetchFeedReady(limit = 12, opts?: { preflight?: boolean })
 /* ======================= MATCH/INVITES ======================= */
 export type UUID = string;
 export type InviteStatus = "PENDING" | "ACCEPTED";
-
-export type InviteRequest = {
-  inviterId: UUID;
-  targetId: UUID;
-  inviterName?: string;
-  inviterPhone?: string;
-  inviterAvatar?: string;
-};
-export type InviteDTO = {
-  id: UUID;
-  inviterId: UUID;
-  targetId: UUID;
-  inviterName?: string;
-  inviterPhone?: string;
-  inviterAvatar?: string;
-  status: InviteStatus;
-  createdAt: string;
-};
+export type InviteRequest = { inviterId: UUID; targetId: UUID; inviterName?: string; inviterPhone?: string; inviterAvatar?: string; };
+export type InviteDTO = { id: UUID; inviterId: UUID; targetId: UUID; inviterName?: string; inviterPhone?: string; inviterAvatar?: string; status: InviteStatus; createdAt: string; };
 export type InviteResponse = { matched: boolean; matchId?: UUID; invite?: InviteDTO; };
 export type AcceptRequest = { inviteId?: UUID; inviterId?: UUID; targetId?: UUID; };
 export type AcceptDTO = { id: UUID; inviteId: UUID; inviterName?: string; inviterPhone?: string; inviterAvatar?: string; createdAt: string; };
@@ -546,7 +516,6 @@ const INV_SENT_PREFIX = "INV_SENT_V1:";
 const INV_RECV_PREFIX = "INV_RECV_V1:";
 const INV_INDEX_PREFIX = "INV_IDX_V1:";
 
-// ======= Helpers de cache local dos convites/matches =======
 async function _readList(key: string): Promise<InviteDTO[]> {
   try { const raw = await AsyncStorage.getItem(key); return raw ? (JSON.parse(raw) as InviteDTO[]) : []; }
   catch { return []; }
@@ -584,21 +553,21 @@ async function _cacheUpdateInviteStatus(inviteId: string, status: InviteStatus) 
   await Promise.all([_writeList(sentKey, patch(sent)), _writeList(recvKey, patch(recv))]);
 }
 
-// ======= Export: cache simples do último usuário curtido (para TS2614) =======
 const LAST_MATCHED_USER_ID_KEY = "LAST_MATCHED_USER_ID_V1";
-export async function saveLastMatchedUserId(userId: string): Promise<void> {
-  try { await AsyncStorage.setItem(LAST_MATCHED_USER_ID_KEY, String(userId)); } catch {}
+export async function saveLastMatchedUserId(userId: string): Promise<void> { try { await AsyncStorage.setItem(LAST_MATCHED_USER_ID_KEY, String(userId)); } catch {} }
+export async function getLastMatchedUserId(): Promise<string | null> { try { return await AsyncStorage.getItem(LAST_MATCHED_USER_ID_KEY); } catch { return null; } }
+export async function popLastMatchedUserId(): Promise<string | null> { const v = await getLastMatchedUserId(); try { await AsyncStorage.removeItem(LAST_MATCHED_USER_ID_KEY); } catch {} return v; }
+
+/** ====== Fallbacks locais (corrigem os erros 2552) ====== */
+async function listInvitesSentLocal(userId: string, status?: InviteStatus): Promise<InviteDTO[]> {
+  const list = await _readList(INV_SENT_PREFIX + userId);
+  return status ? list.filter(i => i.status === status) : list;
 }
-export async function getLastMatchedUserId(): Promise<string | null> {
-  try { return await AsyncStorage.getItem(LAST_MATCHED_USER_ID_KEY); } catch { return null; }
-}
-export async function popLastMatchedUserId(): Promise<string | null> {
-  const v = await getLastMatchedUserId();
-  try { await AsyncStorage.removeItem(LAST_MATCHED_USER_ID_KEY); } catch {}
-  return v;
+async function listInvitesReceivedLocal(userId: string, status?: InviteStatus): Promise<InviteDTO[]> {
+  const list = await _readList(INV_RECV_PREFIX + userId);
+  return status ? list.filter(i => i.status === status) : list;
 }
 
-// ======= APIs de convite/match =======
 async function ensureMe() {
   if (!_currentUser) await initCurrentUserFromToken().catch(() => null);
   if (!_currentUser) throw toApiError(new Error("Usuário não autenticado"), 401);
@@ -649,295 +618,205 @@ export async function listInvitesSent(userId?: string, status?: InviteStatus): P
   let uid = userId || getUserIdFromToken();
   if (!uid) { const me = await initCurrentUserFromToken().catch(() => null); uid = (me as any)?.id; }
   const url = buildUrl(routes.matches.sentInvites, undefined, { userId: String(uid), status });
-  try {
-    return await getJson<InviteDTO[]>(url, { timeoutMs: 15_000, retries: 1, idempotentKey: makeKey("GET", url) });
-  } catch (e: any) {
-    if (e?.status === 404) {
-      console.warn("[listInvitesSent] endpoint ausente (404) — usando cache local");
-      return listInvitesSentLocal(String(uid), status);
-    }
-    return listInvitesSentLocal(String(uid), status);
-  }
+  try { return await getJson<InviteDTO[]>(url, { timeoutMs: 15_000, retries: 1, idempotentKey: makeKey("GET", url) }); }
+  catch { return listInvitesSentLocal(String(uid), status); }
 }
 export async function listInvitesReceived(userId?: string, status?: InviteStatus): Promise<InviteDTO[]> {
   let uid = userId || getUserIdFromToken();
   if (!uid) { const me = await initCurrentUserFromToken().catch(() => null); uid = (me as any)?.id; }
   const url = buildUrl(routes.matches.receivedInvites, undefined, { userId: String(uid), status });
-  try {
-    return await getJson<InviteDTO[]>(url, { timeoutMs: 15_000, retries: 1, idempotentKey: makeKey("GET", url) });
-  } catch (e: any) {
-    if (e?.status === 404) {
-      console.warn("[listInvitesReceived] endpoint ausente (404) — usando cache local");
-      return listInvitesReceivedLocal(String(uid), status);
-    }
-    return listInvitesReceivedLocal(String(uid), status);
-  }
+  try { return await getJson<InviteDTO[]>(url, { timeoutMs: 15_000, retries: 1, idempotentKey: makeKey("GET", url) }); }
+  catch { return listInvitesReceivedLocal(String(uid), status); }
 }
 
-// Fallbacks 100% locais (usam o cache em AsyncStorage)
-async function listInvitesSentLocal(userId: string, status?: InviteStatus): Promise<InviteDTO[]> {
-  const list = await _readList(INV_SENT_PREFIX + userId);
-  return status ? list.filter(i => i.status === status) : list;
-}
+/* ===================== BILLING (Stripe) ===================== */
+export type SubscriptionBackendStatus =
+  | "INCOMPLETE" | "INCOMPLETE_EXPIRED" | "TRIALING" | "ACTIVE"
+  | "PAST_DUE" | "CANCELED" | "UNPAID" | "INACTIVE";
 
-async function listInvitesReceivedLocal(userId: string, status?: InviteStatus): Promise<InviteDTO[]> {
-  const list = await _readList(INV_RECV_PREFIX + userId);
-  return status ? list.filter(i => i.status === status) : list;
-}
-
-
-/* ===================== PAGAMENTO & ASSINATURA ===================== */
-export type PaymentStatus = "PENDING" | "CONFIRMED" | "FAILED" | "EXPIRED";
-export type SubscriptionStatus = "ACTIVE" | "INACTIVE" | "PAST_DUE" | "CANCELED";
-
-export type CheckoutResponse = {
-  txid: string;
-  copiaECola: string;
-  qrPngBase64: string;
-  amount: string;
-  expiresAt: string; // ISO
+/** IMPORTANTE: agora inclui setupIntentClientSecret e hostedInvoiceUrl */
+export type SubscribeResponse = {
+  publishableKey: string;
+  customerId: string;
+  subscriptionId: string;
+  paymentIntentClientSecret: string | null; // cobrança imediata (PI)
+  ephemeralKeySecret: string;
+  setupIntentClientSecret?: string | null;  // trial/auto (SI)
+  hostedInvoiceUrl?: string | null;         // boleto/send_invoice
 };
-export type PaymentStatusResponse = {
-  txid: string;
-  paymentStatus: PaymentStatus;
-  subscriptionStatus: SubscriptionStatus;
+
+export type SubscriptionStatusResponse = {
+  subscriptionId: string;
+  status: SubscriptionBackendStatus;
+  currentPeriodEnd?: string | null;
+  cancelAtPeriodEnd: boolean;
 };
-export type VerifyResponse = PaymentStatusResponse & { changed: boolean; };
 
 export type SubscriptionDTO = {
   userId: string;
-  status: SubscriptionStatus;
+  status: SubscriptionBackendStatus;
   currentPeriodStart?: string | null;
   currentPeriodEnd?: string | null;
   cancelAtPeriodEnd: boolean;
 };
 
-/** ===== Cache local da assinatura (não faz requisição de rede) ===== */
+/** ===== Cache: último status + subscriptionId por usuário ===== */
 const SUBS_CACHE_KEY = "SUBS_LAST_KNOWN_V1";
-export type SubscriptionCache = {
-  userId: string;
-  status: SubscriptionStatus;
-  currentPeriodEnd?: string | null;
-  updatedAt: number;
-};
+const SUBS_ID_BY_USER_KEY = "SUBS_ID_BY_USER_V1";
+export type SubscriptionCache = { userId: string; status: SubscriptionBackendStatus; currentPeriodEnd?: string | null; updatedAt: number; };
 let _subsCacheMemory: SubscriptionCache | null = null;
 
 export async function setLastKnownSubscription(dto: SubscriptionDTO): Promise<void> {
-  const entry: SubscriptionCache = {
-    userId: dto.userId,
-    status: dto.status,
-    currentPeriodEnd: dto.currentPeriodEnd ?? null,
-    updatedAt: Date.now(),
-  };
+  const entry: SubscriptionCache = { userId: dto.userId, status: dto.status, currentPeriodEnd: dto.currentPeriodEnd ?? null, updatedAt: Date.now() };
   _subsCacheMemory = entry;
   try { await AsyncStorage.setItem(SUBS_CACHE_KEY, JSON.stringify(entry)); } catch {}
 }
 export async function getLastKnownSubscription(): Promise<SubscriptionCache | null> {
   if (_subsCacheMemory) return _subsCacheMemory;
-  try {
-    const raw = await AsyncStorage.getItem(SUBS_CACHE_KEY);
-    if (!raw) return null;
-    const entry = JSON.parse(raw) as SubscriptionCache;
-    _subsCacheMemory = entry;
-    return entry;
-  } catch { return null; }
+  try { const raw = await AsyncStorage.getItem(SUBS_CACHE_KEY); if (!raw) return null; const entry = JSON.parse(raw) as SubscriptionCache; _subsCacheMemory = entry; return entry; }
+  catch { return null; }
 }
-/** Retorna true se o último status conhecido for ACTIVE (sem chamar backend). */
 export async function isSubscriptionActiveCached(): Promise<boolean> {
   const entry = await getLastKnownSubscription();
-  return !!entry && entry.status === "ACTIVE";
+  return !!entry && (entry.status === "ACTIVE" || entry.status === "TRIALING");
+}
+export async function saveUserSubscriptionId(userId: string, subscriptionId: string): Promise<void> {
+  try {
+    const raw = (await AsyncStorage.getItem(SUBS_ID_BY_USER_KEY)) || "{}";
+    const map = JSON.parse(raw) as Record<string,string>;
+    map[userId] = subscriptionId;
+    await AsyncStorage.setItem(SUBS_ID_BY_USER_KEY, JSON.stringify(map));
+  } catch {}
+}
+export async function getUserSubscriptionId(userId: string): Promise<string | null> {
+  try {
+    const raw = (await AsyncStorage.getItem(SUBS_ID_BY_USER_KEY)) || "{}";
+    const map = JSON.parse(raw) as Record<string,string>;
+    return map[userId] || null;
+  } catch { return null; }
 }
 
-async function ensureUserId(): Promise<string> {
-  let uid = getUserIdFromToken();
-  if (!uid) {
-    const me = await initCurrentUserFromToken().catch(() => null);
-    uid = (me as any)?.id || null;
-  }
+const STRIPE_DEFAULT_API_VERSION = "2020-08-27";
+
+/** Inicia a assinatura no backend e retorna segredos p/ PaymentSheet */
+export async function startStripeSubscription(input: {
+  userId?: string;
+  email?: string;
+  priceId?: string;
+  stripeVersion?: string;
+  pmMode?: "auto" | "boleto"; // <- novo parâmetro
+}): Promise<SubscribeResponse> {
+  const uid =
+    input.userId ||
+    getUserIdFromToken() ||
+    (await initCurrentUserFromToken().then(m => (m as any)?.id).catch(() => null));
   if (!uid) throw toApiError(new Error("Usuário não autenticado"), 401);
-  return String(uid);
-}
 
-export async function createPixCheckout(userId?: string): Promise<CheckoutResponse> {
-  const uid = userId || await ensureUserId();
-  const url = buildUrl(routes.payments.checkout);
-  const reqId = nextReqId("PAY");
-  logPay("REQ", { reqId, op: "checkout", url, body: { userId: uid } });
+  const url = buildUrl(routes.billing.subscribe);
+  const reqId = nextReqId("BILL");
+
+  // fallback: usa o e-mail salvo no login caso não tenha vindo no input
+  let finalEmail = input.email;
+  if (!finalEmail) finalEmail = await getLastLoginEmail() || undefined;
+
+  const body = {
+    userId: uid,
+    email: finalEmail,
+    priceId: input.priceId,
+    stripeVersion: input.stripeVersion || STRIPE_DEFAULT_API_VERSION,
+    pmMode: input.pmMode || "auto",
+    clientRequestId: reqId,
+  };
+
+  logBill("REQ", { reqId, op: "subscribe", url, payload: { ...body, email: finalEmail ? "***" : undefined } });
 
   try {
-    const out = await postJson<CheckoutResponse>(url, { userId: uid }, {
-      timeoutMs: timeouts["POST /api/payments/checkout"], retries: 1
-    });
-    logPay("RES", {
-      reqId, op: "checkout",
-      txid: out?.txid,
-      amount: out?.amount,
-      expiresAt: out?.expiresAt,
-      preview: {
-        copiaECola: out?.copiaECola ? `${out.copiaECola.slice(0, 12)}…` : null,
-        qrPngBase64Bytes: out?.qrPngBase64 ? out.qrPngBase64.length : 0
+    const out = await postJson<SubscribeResponse>(
+      url,
+      body,
+      {
+        timeoutMs: timeouts["POST /api/billing/subscribe"],
+        retries: 1,
+        idempotentKey: makeKey("POST", url, body),
       }
+    );
+    logBill("RES", {
+      reqId,
+      op: "subscribe",
+      subscriptionId: out?.subscriptionId,
+      hasPI: !!out?.paymentIntentClientSecret,
+      hasSI: !!out?.setupIntentClientSecret,
+      hosted: !!out?.hostedInvoiceUrl
     });
+
+    try { await saveUserSubscriptionId(String(uid), out.subscriptionId); } catch {}
+
     return out;
   } catch (e: any) {
     const er = toApiError(e);
-    logPay("ERR", { reqId, op: "checkout", status: er.status, message: er.message, friendly: er.friendly });
-    throw er;
-  }
-}
-
-export async function getPaymentStatus(txid: string): Promise<PaymentStatusResponse> {
-  const url = buildUrl(routes.payments.status, { txid });
-  const reqId = nextReqId("PAY");
-  logPay("REQ", { reqId, op: "status", url, txid });
-
-  try {
-    const out = await getJson<PaymentStatusResponse>(url, {
-      timeoutMs: timeouts["GET /api/payments/status/:txid"], retries: 1, idempotentKey: makeKey("GET", url)
-    });
-    logPay("RES", { reqId, op: "status", txid: out?.txid, paymentStatus: out?.paymentStatus, subscriptionStatus: out?.subscriptionStatus });
-    return out;
-  } catch (e: any) {
-    const er = toApiError(e);
-    logPay("ERR", { reqId, op: "status", txid, status: er.status, message: er.message, friendly: er.friendly });
-    throw er;
-  }
-}
-
-/**
- * Tenta POST /verify; se o servidor não aceitar (405/404/501),
- * faz fallback para GET /status/:txid e retorna changed:false.
- */
-export async function verifyPayment(txid: string): Promise<VerifyResponse> {
-  const url = buildUrl(routes.payments.verify, { txid });
-  const reqId = nextReqId("PAY");
-  logPay("REQ", { reqId, op: "verify", url, txid });
-
-  try {
-    const out = await postJson<VerifyResponse>(url, null, {
-      timeoutMs: timeouts["POST /api/payments/verify/:txid"],
-      retries: retries["POST /api/payments/verify/:txid"],
-      idempotentKey: makeKey("POST", url)
-    });
-    logPay("RES", { reqId, op: "verify", txid: out?.txid, paymentStatus: out?.paymentStatus, subscriptionStatus: out?.subscriptionStatus, changed: out?.changed });
-    return out;
-  } catch (e: any) {
-    const er = toApiError(e);
-    if (er.status === 405 || er.status === 404 || er.status === 501) {
-      const s = await getPaymentStatus(txid);
-      logPay("RES", { reqId, op: "verify->status-fallback", txid: s?.txid, paymentStatus: s?.paymentStatus, subscriptionStatus: s?.subscriptionStatus });
-      return { ...s, changed: false };
+    const msg = String(er?.message || "").toLowerCase();
+    if (msg.includes("idempotent") || msg.includes("idempotency")) {
+      er.friendly = "Detectamos uma tentativa duplicada com parâmetros diferentes. Tente novamente e evite toques repetidos.";
     }
-    logPay("ERR", { reqId, op: "verify", txid, status: er.status, message: er.message, friendly: er.friendly });
+    logBill("ERR", { reqId, op: "subscribe", status: er.status, message: er.message, friendly: er.friendly });
     throw er;
   }
 }
 
-export async function confirmPaymentManual(txid: string): Promise<void> {
-  const url = buildUrl(routes.payments.confirm, { txid });
-  const reqId = nextReqId("PAY");
-  logPay("REQ", { reqId, op: "confirm", url, txid });
-
+/** Busca status no backend por subscriptionId */
+export async function getSubscriptionStatus(subscriptionId: string): Promise<SubscriptionStatusResponse> {
+  const url = buildUrl(routes.billing.statusById, { id: subscriptionId });
+  const reqId = nextReqId("BILL");
+  logBill("REQ", { reqId, op: "statusById", url, subscriptionId });
   try {
-    await postJson<void>(url, null, { timeoutMs: 15_000 });
-    logPay("RES", { reqId, op: "confirm", txid, ok: true });
-  } catch (e: any) {
-    if (e?.status === 404) {
-      logPay("RES", { reqId, op: "confirm", txid, note: "endpoint 404 (ambiente DEV?) — ignorado" });
-      return;
-    }
-    const er = toApiError(e);
-    logPay("ERR", { reqId, op: "confirm", txid, status: er.status, message: er.message, friendly: er.friendly });
-    throw er;
-  }
-}
-
-export async function getSubscriptionStatus(userId?: string): Promise<SubscriptionDTO> {
-  const uid = userId || await ensureUserId();
-  const url = buildUrl(routes.subscriptions.status, { userId: uid });
-  const reqId = nextReqId("PAY");
-  logPay("REQ", { reqId, op: "subs.status", url, userId: uid });
-
-  try {
-    const out = await getJson<SubscriptionDTO>(url, {
-      timeoutMs: timeouts["GET /api/subscriptions/:userId/status"], retries: 1, idempotentKey: makeKey("GET", url)
-    });
-    // Atualiza cache local para gating no app, sem novas requisições
-    await setLastKnownSubscription(out);
-    logPay("RES", { reqId, op: "subs.status", userId: uid, status: out?.status, currentPeriodEnd: out?.currentPeriodEnd });
+    const out = await getJson<SubscriptionStatusResponse>(url, { timeoutMs: timeouts["GET /api/billing/subscriptions/:id"], retries: 1, idempotentKey: makeKey("GET", url) });
+    logBill("RES", { reqId, op: "statusById", subscriptionId, status: out?.status, currentPeriodEnd: out?.currentPeriodEnd });
     return out;
   } catch (e: any) {
     const er = toApiError(e);
-    logPay("ERR", { reqId, op: "subs.status", userId: uid, statusCode: er.status, message: er.message, friendly: er.friendly });
+    logBill("ERR", { reqId, op: "statusById", subscriptionId, status: er.status, message: er.message, friendly: er.friendly });
     throw er;
   }
 }
 
-export async function cancelSubscriptionAtPeriodEnd(userId?: string): Promise<void> {
-  const uid = userId || await ensureUserId();
-  const url = buildUrl(routes.subscriptions.cancelAtPeriodEnd, { userId: uid });
-  const reqId = nextReqId("PAY");
-  logPay("REQ", { reqId, op: "subs.cancelAtPeriodEnd", url, userId: uid });
-
+/** Troca de plano (se necessário) */
+export async function changeBillingPlan(subscriptionId: string, newPriceId: string, prorationBehavior: "create_prorations" | "none" | "always_invoice" = "create_prorations"): Promise<void> {
+  const url = buildUrl(routes.billing.changePlan);
+  const body = { subscriptionId, newPriceId, prorationBehavior };
+  const reqId = nextReqId("BILL");
+  logBill("REQ", { reqId, op: "changePlan", body });
   try {
-    await postJson<void>(url, null, { timeoutMs: timeouts["POST /api/subscriptions/:userId/cancel-at-period-end"], retries: 1 });
-    logPay("RES", { reqId, op: "subs.cancelAtPeriodEnd", userId: uid, ok: true });
+    await postJson<void>(url, body, { timeoutMs: timeouts["POST /api/billing/change-plan"], retries: 1 });
+    logBill("RES", { reqId, op: "changePlan", ok: true });
   } catch (e: any) {
     const er = toApiError(e);
-    logPay("ERR", { reqId, op: "subs.cancelAtPeriodEnd", userId: uid, status: er.status, message: er.message, friendly: er.friendly });
+    logBill("ERR", { reqId, op: "changePlan", status: er.status, message: er.message, friendly: er.friendly });
     throw er;
   }
 }
 
-export async function pollPaymentUntilConfirmed(
-  txid: string,
-  opts: { intervalMs?: number; timeoutMs?: number } = {}
-): Promise<PaymentStatusResponse> {
-  const intervalMs = Math.max(1000, opts.intervalMs ?? 5000);
-  const timeoutMs = Math.max(intervalMs, opts.timeoutMs ?? 15 * 60_000);
+/** ===== Helper: polling até ficar ACTIVE/TRIALING ===== */
+export async function pollSubscriptionUntilActive(
+  subscriptionId: string,
+  opts: { intervalMs?: number; maxMs?: number } = {}
+): Promise<SubscriptionStatusResponse> {
+  const intervalMs = Math.max(800, opts.intervalMs ?? 1500);
+  const maxMs = Math.max(intervalMs, opts.maxMs ?? 60_000);
   const t0 = Date.now();
-  const corrId = nextReqId("POLL");
 
-  logPay("REQ", { corrId, op: "poll", txid, intervalMs, timeoutMs, startAt: new Date(t0).toISOString() });
-
-  // 1ª leitura via STATUS (curta-circuita se já confirmado)
-  let last: PaymentStatusResponse = await getPaymentStatus(txid);
-  let lastSeen = last.paymentStatus;
-
-  if (last.paymentStatus === "CONFIRMED") {
-    logPay("RES", { corrId, op: "poll", txid, final: last.paymentStatus, tookMs: Date.now() - t0 });
-    return last;
-  }
-
-  while (Date.now() - t0 < timeoutMs) {
-    await sleep(intervalMs + Math.floor(Math.random() * 400));
+  let last: SubscriptionStatusResponse | null = null;
+  while (Date.now() - t0 < maxMs) {
     try {
-      const v = await verifyPayment(txid); // possui fallback interno para STATUS em 405/404/501
-      last = { txid: v.txid, paymentStatus: v.paymentStatus, subscriptionStatus: v.subscriptionStatus };
-    } catch (e: any) {
-      const er = toApiError(e);
-      logPay("ERR", { corrId, op: "poll.verify", txid, status: er.status, message: er.message, friendly: er.friendly });
-      // Fallback adicional: mesmo se verify falhar por outro motivo, consultar STATUS
-      last = await getPaymentStatus(txid);
-    }
-
-    if (last.paymentStatus !== lastSeen) {
-      logPay("RES", { corrId, op: "poll.tick", txid, state: last.paymentStatus });
-      lastSeen = last.paymentStatus;
-    }
-    if (last.paymentStatus === "CONFIRMED" || last.paymentStatus === "FAILED" || last.paymentStatus === "EXPIRED") {
-      logPay("RES", { corrId, op: "poll", txid, final: last.paymentStatus, tookMs: Date.now() - t0 });
-      return last;
-    }
+      const st = await getSubscriptionStatus(subscriptionId);
+      last = st;
+      if (st.status === "ACTIVE" || st.status === "TRIALING") return st;
+    } catch {}
+    await sleep(intervalMs);
   }
-
-  logPay("RES", { corrId, op: "poll", txid, final: last.paymentStatus, timedOut: true, tookMs: Date.now() - t0 });
-  return last;
+  if (last) return last;
+  throw toApiError(new Error("Tempo esgotado verificando assinatura."));
 }
 
-/* -----------------------------------------------------------------------
-   ⚠️ Este arquivo está em `app/`. O Expo Router tenta tratá-lo como rota.
-   O "noop" abaixo impede isso sem afetar os named exports.
-------------------------------------------------------------------------- */
+/* ----------------------------------------------------------------------- */
 const __noop = {} as never;
 export default __noop;

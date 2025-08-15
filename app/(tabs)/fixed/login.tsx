@@ -5,7 +5,7 @@ import {
 import { router } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
-import { loginUser, getPerfilByEmail } from "../gateway/api";
+import { loginUser, getPerfilByEmail, saveLoginEmail } from "../gateway/api";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -15,16 +15,23 @@ export default function Login() {
   async function onSubmit() {
     try {
       setLoading(true);
-      const { token } = await loginUser({ email: email.trim(), password: senha.trim() });
+      const emailNorm = email.trim().toLowerCase();
+
+      const { token } = await loginUser({ email: emailNorm, password: senha.trim() });
       console.log("🔑 token:", token);
+      console.log("[AUTH] Login realizado com:", emailNorm);
+
+      // redundante (loginUser já salva), mas deixa explícito:
+      await saveLoginEmail(emailNorm);
+      console.log("[AUTH] Email do login persistido:", emailNorm);
 
       // ⚡ Após logar, já puxa o perfil e popula o cache
-      const perfil = await getPerfilByEmail(email.trim());
-      console.log("👤 Perfil carregado:", perfil?.nome);
+      const perfil = await getPerfilByEmail(emailNorm);
+      console.log("👤 Perfil carregado:", perfil?.nome, " | email:", perfil?.email);
 
       router.replace("/(tabs)/fixed/dashboard");
     } catch (e: any) {
-      Alert.alert("Falha no login", e?.message ?? "Tente novamente");
+      Alert.alert("Falha no login", e?.friendly || e?.message || "Tente novamente");
     } finally {
       setLoading(false);
     }
