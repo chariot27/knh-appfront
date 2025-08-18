@@ -1,27 +1,29 @@
+// PubsScreen.tsx
+import { useIsFocused } from "@react-navigation/native";
 import React, {
+  forwardRef,
   useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
   useState,
-  forwardRef,
 } from "react";
 import {
-  View,
-  StyleSheet,
-  FlatList,
-  Dimensions,
-  RefreshControl,
   ActivityIndicator,
-  Text,
-  NativeScrollEvent,
-  NativeSyntheticEvent,
+  Dimensions,
+  FlatList,
   InteractionManager,
   LayoutChangeEvent,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
-import { useIsFocused } from "@react-navigation/native";
 
 import { fetchFeedReady, VideoDTO } from "../gateway/api";
+import { isDevUnlock } from "../gateway/devUnlock";
 import SafeVideo from "../gateway/SafeVideo";
 
 const { height: WIN_H, width } = Dimensions.get("window");
@@ -45,8 +47,8 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
   const [initialLoading, setInitialLoading] = useState(true);
   const [viewIndex, setViewIndex] = useState(0);
   const [feedError, setFeedError] = useState<string | null>(null);
+  const [dev, setDev] = useState(false);
 
-  // altura dinâmica do container
   const [containerH, setContainerH] = useState(WIN_H);
   const containerHRef = useRef(WIN_H);
 
@@ -58,10 +60,13 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
     console.log(`🛸[Pubs] ${msg}`, extra ?? "");
   };
 
+  const readDev = useCallback(async () => setDev(await isDevUnlock()), []);
+
   const loadFirstPage = useCallback(async () => {
     setInitialLoading(true);
     setFeedError(null);
     try {
+      await readDev();
       const data = await fetchFeedReady(PAGE_SIZE, { preflight: false });
       setItems(data);
       indexRef.current = 0;
@@ -74,7 +79,7 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
     } finally {
       setInitialLoading(false);
     }
-  }, [onActive]);
+  }, [onActive, readDev]);
 
   useEffect(() => {
     if (isFocused) loadFirstPage().catch(() => {});
@@ -91,7 +96,7 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
 
   const loadMore = useCallback(async () => {
     if (loadingMore) return;
-    // Quando o backend suportar paginação, adicionar aqui
+    // Paginação futura
   }, [loadingMore]);
 
   const onLayoutContainer = useCallback((e: LayoutChangeEvent) => {
@@ -139,7 +144,6 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
             const nextPub = items[next];
             if (nextPub) onActive?.(nextPub);
           } else {
-            // fim da lista — mantém comportamento e tenta carregar mais se existir
             scrollToIdx(next, true);
             loadMore();
           }
@@ -207,6 +211,12 @@ const PubsScreen = forwardRef<PubsScreenHandle, Props>(function PubsScreen(
         </View>
       )}
 
+      {dev && (
+        <View style={[s.banner, { top: 8, backgroundColor: "rgba(123,97,255,0.2)" }]}>
+          <Text style={[s.bannerTxt, { color: "#cfc4ff" }]}>DESBLOQUEIO DEV ATIVO</Text>
+        </View>
+      )}
+
       <FlatList
         ref={listRef}
         data={items}
@@ -250,7 +260,7 @@ export default PubsScreen;
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000" },
-  item: { width, backgroundColor: "#000" }, // altura vem do container
+  item: { width, backgroundColor: "#000" },
   center: { alignItems: "center", justifyContent: "center" },
   banner: {
     position: "absolute",

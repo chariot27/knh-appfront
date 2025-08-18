@@ -1,14 +1,29 @@
+// ConvitesScreen.tsx
+import { Feather } from "@expo/vector-icons";
+import { useFocusEffect } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  View, Text, Image, StyleSheet, FlatList, Dimensions,
-  TouchableOpacity, RefreshControl, Platform, ToastAndroid, Alert, TextInput, ActivityIndicator,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  FlatList,
+  Image,
+  Platform,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TextInput,
+  ToastAndroid,
+  TouchableOpacity,
+  View,
 } from "react-native";
-import { Feather } from "@expo/vector-icons";
-import { router } from "expo-router";
 import {
   InviteDTO, InviteStatus, acceptInvite,
-  getUserIdFromToken, initCurrentUserFromToken, listInvitesReceived, isSubscriptionActiveCached,
+  getUserIdFromToken, initCurrentUserFromToken,
+  isSubscriptionActiveCached,
+  listInvitesReceived,
 } from "../gateway/api";
+import { isDevUnlock } from "../gateway/devUnlock";
 
 const { width } = Dimensions.get("window");
 const GUTTER = 14;
@@ -29,7 +44,7 @@ type ConviteItem = {
 const norm = (t: string) =>
   t.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().trim();
 
-function BlockedInline() {
+/* function BlockedInline() {
   return (
     <View style={b.wrap}>
       <Feather name="lock" size={24} color="#bbb" />
@@ -41,18 +56,30 @@ function BlockedInline() {
       </TouchableOpacity>
     </View>
   );
-}
+} */
 
 export default function ConvitesScreen() {
   const [allowed, setAllowed] = useState<boolean | null>(null);
+  const [dev, setDev] = useState(false);
   const [data, setData] = useState<ConviteItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
 
-  useEffect(() => { (async () => setAllowed(await isSubscriptionActiveCached()))(); }, []);
-
   const toast = (m: string) =>
     Platform.OS === "android" ? ToastAndroid.show(m, ToastAndroid.SHORT) : Alert.alert(m);
+
+  const checkAllowed = useCallback(async () => {
+    const d = await isDevUnlock();
+    setDev(d);
+    if (d) {
+      setAllowed(true);
+      return;
+    }
+    setAllowed(await isSubscriptionActiveCached());
+  }, []);
+
+  useEffect(() => { checkAllowed(); }, [checkAllowed]);
+  useFocusEffect(useCallback(() => { checkAllowed(); }, [checkAllowed]));
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -114,13 +141,19 @@ export default function ConvitesScreen() {
   if (allowed === null) {
     return <View style={{flex:1,alignItems:"center",justifyContent:"center"}}><ActivityIndicator color="#7B61FF" /></View>;
   }
-  if (!allowed) return <BlockedInline />;
+  //if (!allowed) return <BlockedInline />;
 
   return (
     <View style={s.screen}>
+      {dev && (
+        <View style={s.devPill}>
+          <Text style={s.devPillTxt}>DESBLOQUEIO DEV ATIVO</Text>
+        </View>
+      )}
+
       <FlatList
         data={filtered}
-        keyExtractor={(it: ConviteItem) => it.id}
+        keyExtractor={(it: any) => it.id}
         renderItem={({ item }) => (
           <View style={s.card}>
             <View style={s.row}>
@@ -208,6 +241,18 @@ const b = StyleSheet.create({
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000" },
+  devPill: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    marginLeft: GUTTER,
+    backgroundColor: "rgba(123,97,255,0.18)",
+    borderColor: "#7B61FF",
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  devPillTxt: { color: "#cfc4ff", fontWeight: "800", fontSize: 12 },
 
   headerWrap: { marginBottom: 12, marginTop: 40 },
   topbar: { flexDirection: "row", alignItems: "center", marginBottom: 14 },

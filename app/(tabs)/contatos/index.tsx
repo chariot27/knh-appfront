@@ -1,26 +1,36 @@
+// ContatosScreen.tsx
 // Requer: expo-clipboard (expo install expo-clipboard)
+import { Feather } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
+import { useFocusEffect } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  View, Text, Image, FlatList, StyleSheet, Dimensions, RefreshControl,
-  TouchableOpacity, Platform, ToastAndroid, Alert, TextInput,
   ActivityIndicator,
+  Alert,
+  Dimensions,
+  FlatList,
+  Image,
+  Platform,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TextInput,
+  ToastAndroid,
+  TouchableOpacity,
+  View,
 } from "react-native";
-import * as Clipboard from "expo-clipboard";
-import { Feather } from "@expo/vector-icons";
-import { router } from "expo-router";
 import {
   getUserIdFromToken, initCurrentUserFromToken,
-  listMyMatches, listInvitesSent, listInvitesReceived,
   InviteStatus, isSubscriptionActiveCached,
+  listInvitesReceived,
+  listInvitesSent,
+  listMyMatches,
 } from "../gateway/api";
-
-
+import { isDevUnlock } from "../gateway/devUnlock";
 
 const { width } = Dimensions.get("window");
 const GUTTER = 14;
 const CARD_W = Math.floor((width - GUTTER * 3) / 2);
-
-// Altura da navbar fixa + respiro para não cobrir os cards
 const NAVBAR_HEIGHT = 64;
 const BOTTOM_INSET = NAVBAR_HEIGHT + 20;
 
@@ -38,7 +48,7 @@ export type ContactItem = {
 const norm = (t: string) =>
   t.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().trim();
 
-function BlockedInline() {
+/* function BlockedInline() {
   return (
     <View style={s2.wrap}>
       <Feather name="lock" size={24} color="#bbb" />
@@ -50,17 +60,30 @@ function BlockedInline() {
       </TouchableOpacity>
     </View>
   );
-}
+} */
 
 export default function ContatosScreen() {
   const [allowed, setAllowed] = useState<boolean | null>(null);
+  const [dev, setDev] = useState(false);
   const [data, setData] = useState<ContactItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
 
-  useEffect(() => { (async () => setAllowed(await isSubscriptionActiveCached()))(); }, []);
   const toast = (m: string) =>
     Platform.OS === "android" ? ToastAndroid.show(m, ToastAndroid.SHORT) : Alert.alert(m);
+
+  const checkAllowed = useCallback(async () => {
+    const d = await isDevUnlock();
+    setDev(d);
+    if (d) {
+      setAllowed(true);
+      return;
+    }
+    setAllowed(await isSubscriptionActiveCached());
+  }, []);
+
+  useEffect(() => { checkAllowed(); }, [checkAllowed]);
+  useFocusEffect(useCallback(() => { checkAllowed(); }, [checkAllowed]));
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -146,10 +169,16 @@ export default function ContatosScreen() {
   if (allowed === null) {
     return <View style={{flex:1,alignItems:"center",justifyContent:"center"}}><ActivityIndicator color="#7B61FF" /></View>;
   }
-  if (!allowed) return <BlockedInline />;
+  //if (!allowed) return <BlockedInline />;
 
   return (
     <View style={s.screen}>
+      {dev && (
+        <View style={s.devPill}>
+          <Text style={s.devPillTxt}>DESBLOQUEIO DEV ATIVO</Text>
+        </View>
+      )}
+
       <View style={s.searchWrap}>
         <Feather name="search" size={18} color="#aaa" />
         <TextInput
@@ -231,10 +260,21 @@ export default function ContatosScreen() {
   );
 }
 
-
-
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000" },
+
+  devPill: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    marginLeft: GUTTER,
+    backgroundColor: "rgba(123,97,255,0.18)",
+    borderColor: "#7B61FF",
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  devPillTxt: { color: "#cfc4ff", fontWeight: "800", fontSize: 12 },
 
   searchWrap: {
     flexDirection: "row",

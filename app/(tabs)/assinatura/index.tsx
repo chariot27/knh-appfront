@@ -10,7 +10,7 @@ import {
   Linking,
   Platform,
 } from "react-native";
-import { StripeProvider, initPaymentSheet, presentPaymentSheet } from "@stripe/stripe-react-native";
+import { StripeProvider, initPaymentSheet, presentPaymentSheet, retrieveSetupIntent } from "@stripe/stripe-react-native";
 import {
   getUserIdFromToken,
   getLastLoginEmail,
@@ -21,6 +21,7 @@ import {
   getUserSubscriptionId,
   saveUserSubscriptionId,
   setLastKnownSubscription,
+  confirmInitialInvoicePayment, // << NOVO
   type SubscriptionBackendStatus,
   type SubscribeResponse,
 } from "../gateway/api";
@@ -28,7 +29,7 @@ import {
 // === CONFIG ===
 const PRICE_ID = "price_1Rw5xXRXxX1XNxE59Gn5KzA3";
 const MERCHANT_NAME = "Sua Empresa";
-const MERCHANT_COUNTRY = "BR"; // usado dentro do googlePay
+const MERCHANT_COUNTRY = "BR"; // usado dentro do Google Pay
 
 /* ---------------- utils: retry com backoff + jitter ---------------- */
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -106,13 +107,16 @@ export default function AssinaturaScreen() {
 
     setSubscriptionId(sid);
 
-    if (!cachedActive && status !== "TRIALING") {
-      try {
-        const st = await withRetry(() => getSubscriptionStatus(sid), { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 });
+    // Mesmo com cache ativo, tente pegar o status real — sem "rebaixar" visual para INCOMPLETE
+    try {
+      const st = await withRetry(() => getSubscriptionStatus(sid), { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 });
+      if (st.status === "ACTIVE" || st.status === "TRIALING") {
         setStatus(st.status);
-      } catch {
-        /* silencioso */
+      } else {
+        setStatus((prev) => (prev === "UNKNOWN" ? st.status : prev));
       }
+    } catch {
+      /* silencioso */
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -129,6 +133,7 @@ export default function AssinaturaScreen() {
       const uid = getUserIdFromToken();
       const email = await getLastLoginEmail();
 
+      // Backend cria assinatura DEFAULT_INCOMPLETE e retorna PI client_secret (ou SI fallback)
       const sub = await withRetry(
         () =>
           startStripeSubscription({
@@ -167,7 +172,11 @@ export default function AssinaturaScreen() {
     setLoading(true);
     try {
       const st = await withRetry(() => getSubscriptionStatus(subscriptionId), { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 });
-      setStatus(st.status);
+      if (st.status === "ACTIVE" || st.status === "TRIALING") {
+        setStatus(st.status);
+      } else {
+        setStatus((prev) => (prev === "UNKNOWN" ? st.status : prev));
+      }
       Alert.alert("Status", `Assinatura: ${st.status}`);
     } catch (e: any) {
       Alert.alert("Erro", e?.friendly || e?.message || "Falha ao consultar status.");
@@ -295,6 +304,17 @@ function PaymentSheetRunner({
         return;
       }
 
+      // >>> VALIDA o formato do segredo (PaymentSheet exige pi_... ou seti_/si_... com _secret_)
+      const secret = sub.paymentIntentClientSecret ?? sub.setupIntentClientSecret ?? "";
+      const looksLikePI = /^pi_[^_]+_secret_.+/.test(secret);
+      const looksLikeSI = /^seti?_[^_]+_secret_.+/.test(secret);
+      if (!looksLikePI && !looksLikeSI) {
+        Alert.alert("Pagamento", "Segredo de pagamento inválido recebido do servidor.");
+        onDone();
+        return;
+      }
+      // <<< FIM VALIDAÇÃO
+
       // 1) init PaymentSheet (com Google Pay ligado no Android + customer)
       try {
         await withRetry(
@@ -344,12 +364,61 @@ function PaymentSheetRunner({
         return;
       }
 
-      // 3) poll até ACTIVE/TRIALING
+      // >>> NOVO: se foi fluxo de SetupIntent, recuperar paymentMethod e pedir backend para pagar a fatura inicial
+      if (!hasPI && hasSI) {
+        try {
+          const si = await retrieveSetupIntent(sub.setupIntentClientSecret!);
+          const pmId =
+            (si as any)?.paymentMethodId ||
+            (si as any)?.paymentMethod?.id ||
+            (si as any)?.paymentMethod ||
+            null;
+
+          if (pmId) {
+            await withRetry(
+              () =>
+                confirmInitialInvoicePayment({
+                  subscriptionId: sub.subscriptionId,
+                  paymentMethodId: String(pmId),
+                }),
+              { retries: 2, baseDelayMs: 600, maxDelayMs: 2500 }
+            );
+          }
+        } catch {
+          // silencioso; o poll abaixo ainda pode chegar a ACTIVE via webhook
+        }
+      }
+      // <<< FIM NOVO BLOCO
+
+      // 3) REFRESH/POLL até ACTIVE/TRIALING (antes e depois do webhook)
       try {
+        // tentativa rápida antes do poll
+        try {
+          const stNow = await withRetry(
+            () => getSubscriptionStatus(sub.subscriptionId),
+            { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 }
+          );
+          if (stNow.status === "ACTIVE" || stNow.status === "TRIALING") {
+            const uid = getUserIdFromToken();
+            if (uid) {
+              await setLastKnownSubscription({
+                userId: uid,
+                status: stNow.status,
+                currentPeriodEnd: stNow.currentPeriodEnd ?? null,
+                cancelAtPeriodEnd: stNow.cancelAtPeriodEnd,
+              });
+            }
+            Alert.alert("Assinatura", stNow.status === "ACTIVE" ? "Assinatura ativa!" : "Assinatura iniciada (período de teste).");
+            onDone(stNow.status);
+            return;
+          }
+        } catch {}
+
+        // poll normal
         const finalSt = await pollSubscriptionUntilActive(sub.subscriptionId, { intervalMs: 1500, maxMs: 60_000 });
 
         const uid = getUserIdFromToken();
-        if (uid) {
+        if (uid && (finalSt.status === "ACTIVE" || finalSt.status === "TRIALING")) {
           await setLastKnownSubscription({
             userId: uid,
             status: finalSt.status,

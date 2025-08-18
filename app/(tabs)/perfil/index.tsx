@@ -1,26 +1,29 @@
 // Perfil.tsx
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { Ionicons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Picker } from "@react-native-picker/picker";
+import { router, useFocusEffect } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, Image, Platform,
-  ActivityIndicator, Alert
+  ActivityIndicator, Alert,
+  Image, Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput, TouchableOpacity,
+  View
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
-import { Picker } from "@react-native-picker/picker";
 import { getCurrentUser, getPerfilByEmail } from "../gateway/api";
-import { useFocusEffect } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { router } from "expo-router";
+import { clearDevUnlock, isDevUnlock, setDevUnlock } from "../gateway/devUnlock";
 
 const DEFAULT_AVATAR_URL =
   "https://cdn-icons-png.flaticon.com/512/149/149071.png";
 
-// Ajuste este caminho se seu Login estiver em outra rota
 const LOGIN_ROUTE = "/(tabs)/fixed/login";
 
 export default function Perfil() {
   const [locked, setLocked] = useState(true);
-  const [theme, setTheme] = useState("escuro");
   const [feedFilter, setFeedFilter] = useState("ambos");
   const [loading, setLoading] = useState(true);
 
@@ -31,19 +34,29 @@ export default function Perfil() {
   const [tags, setTags] = useState<string[]>([]);
   const [email, setEmail] = useState<string>("");
 
+  const [unlockText, setUnlockText] = useState("");
+  const [devUnlocked, setDevUnlocked] = useState(false);
+
   const itemColor = Platform.OS === "android" ? "#000" : "#fff";
+
+  const readDev = useCallback(async () => {
+    const on = await isDevUnlock();
+    setDevUnlocked(on);
+    if (on) setLocked(false);
+  }, []);
 
   useEffect(() => {
     const cached = getCurrentUser();
     if (cached) hydrate(cached);
-    setLoading(false);
-  }, []);
+    readDev().finally(() => setLoading(false));
+  }, [readDev]);
 
   useFocusEffect(
     useCallback(() => {
       const cached = getCurrentUser();
       if (cached) hydrate(cached);
-    }, [])
+      readDev();
+    }, [readDev])
   );
 
   function hydrate(u: any) {
@@ -81,7 +94,6 @@ export default function Perfil() {
     }
   }
 
-  // --- NOVO: Confirmação e logout ---
   function confirmLogout() {
     Alert.alert(
       "Sair da conta",
@@ -96,23 +108,34 @@ export default function Perfil() {
 
   async function doLogout() {
     try {
-      // Limpe aqui o que você usa para sessão/cache
       await AsyncStorage.multiRemove(["authToken", "currentUser"]);
-      // Se tiver algo no seu gateway/api para limpar, chame aqui
-      // await clearAuth?.();
-
-      // Zera estado local para não “piscar” dados antigos
       setNome(""); setTipo(""); setBio(""); setAvatarUrl(undefined);
       setEmail(""); setTags([]);
-
-      // Volta pro Login
       router.replace(LOGIN_ROUTE);
     } catch (e) {
       console.warn("Falha ao deslogar:", e);
       router.replace(LOGIN_ROUTE);
     }
   }
-  // --- FIM NOVO ---
+
+  // === Desbloqueio DEV: digite TESTE ===
+  const onChangeUnlock = useCallback(async (t: string) => {
+    setUnlockText(t);
+    if (t.trim().toUpperCase() === "TESTE") {
+      await setDevUnlock(true);
+      setDevUnlocked(true);
+      setLocked(false);
+      setUnlockText("");
+      Alert.alert("Modo DEV", "Desbloqueio ativado. Telas e botões liberados. ✅");
+    }
+  }, []);
+
+  const disableUnlock = useCallback(async () => {
+    await clearDevUnlock();
+    setDevUnlocked(false);
+    setLocked(true);
+    Alert.alert("Modo DEV", "Desbloqueio desativado.");
+  }, []);
 
   if (loading) {
     return (
@@ -138,8 +161,6 @@ export default function Perfil() {
             <TouchableOpacity onPress={toggleLock} style={s.iconBtn}>
               <Ionicons name={locked ? "lock-closed" : "lock-open"} size={20} color="#fff" />
             </TouchableOpacity>
-
-            {/* NOVO: Botão Sair */}
             <TouchableOpacity onPress={confirmLogout} style={[s.iconBtn, s.logoutBtn]}>
               <Ionicons name="exit-outline" size={20} color="#fff" />
             </TouchableOpacity>
@@ -183,13 +204,34 @@ export default function Perfil() {
             style={s.picker}
             mode={Platform.OS === "android" ? "dropdown" : undefined}
           >
-            <Picker.Item label="Embreve" value="Em breve" color={itemColor} />
+            <Picker.Item label="Em breve" value="Em breve" color={itemColor} />
           </Picker>
         </View>
 
+        {/* DEV Unlock abaixo do "Em breve" */}
+        <Text style={[s.label, { marginTop: 6 }]}>Desbloqueio (DEV)</Text>
+        <TextInput
+          style={s.input}
+          value={unlockText}
+          onChangeText={onChangeUnlock}
+          placeholder='Digite "TESTE" para liberar'
+          placeholderTextColor="#888"
+          autoCapitalize="characters"
+        />
+        {devUnlocked && (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 }}>
+            <View style={s.devPill}>
+              <Text style={s.devPillTxt}>DESBLOQUEIO ATIVO</Text>
+            </View>
+            <TouchableOpacity onPress={disableUnlock} style={s.devPillBtn}>
+              <Text style={s.devPillBtnTxt}>Desativar</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         <TouchableOpacity
           style={[s.button, s.subscribeButton]}
-          onPress={() => router.push("/assinatura")}  // ou "/(tabs)/assinatura" se estiver dentro de um grupo (tabs)
+          onPress={() => router.push("/assinatura")}
         >
           <Text style={s.buttonText}>Assinar Streaming</Text>
         </TouchableOpacity>
@@ -213,11 +255,7 @@ const s = StyleSheet.create({
   email: { fontSize: 12, color: "#aaa", marginTop: 2 },
 
   label: { color: "#aaa", marginTop: 10, marginBottom: 4 },
-  input: { backgroundColor: "#1e1e1e", color: "#fff", borderRadius: 8, padding: 10 },
-
-  tagsContainer: { flexDirection: "row", flexWrap: "wrap" },
-  tag: { backgroundColor: "#333", paddingVertical: 4, paddingHorizontal: 8, borderRadius: 8, marginRight: 6, marginBottom: 6 },
-  tagText: { color: "#fff" },
+  input: { backgroundColor: "#1e1e1e", color: "#fff", borderRadius: 8, padding: 10, borderWidth: 1, borderColor: "#2a2a2a" },
 
   pickerWrapper: { backgroundColor: "#1e1e1e", borderRadius: 8, marginBottom: 10, borderWidth: 1, borderColor: "#2a2a2a" },
   picker: { color: "#fff", height: 56, width: "100%" },
@@ -225,7 +263,23 @@ const s = StyleSheet.create({
   button: { backgroundColor: "#444", padding: 12, borderRadius: 8, alignItems: "center", marginTop: 10 },
   subscribeButton: { backgroundColor: "#0066ff" },
   buttonText: { color: "#fff", fontWeight: "bold" },
-
-  // NOVO
   logoutBtn: { backgroundColor: "#b00020" },
+
+  devPill: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(123,97,255,0.15)",
+    borderWidth: 1,
+    borderColor: "#7B61FF",
+  },
+  devPillTxt: { color: "#cfc4ff", fontWeight: "800", fontSize: 12 },
+  devPillBtn: {
+    backgroundColor: "#7B61FF",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  devPillBtnTxt: { color: "#fff", fontWeight: "800", fontSize: 12 },
 });

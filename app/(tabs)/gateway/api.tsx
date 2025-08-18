@@ -36,9 +36,10 @@ export const routes = {
     receivedInvites: { path: "/api/matches/invites/received", method: "GET"  } as RouteEntry,
   },
   billing: {
-    subscribe:  { path: "/api/billing/subscribe",           method: "POST" } as RouteEntry,
-    statusById: { path: "/api/billing/subscriptions/:id",   method: "GET"  } as RouteEntry,
-    changePlan: { path: "/api/billing/change-plan",         method: "POST" } as RouteEntry,
+    subscribe:             { path: "/api/billing/subscribe",               method: "POST" } as RouteEntry,
+    statusById:            { path: "/api/billing/subscriptions/:id",       method: "GET"  } as RouteEntry,
+    changePlan:            { path: "/api/billing/change-plan",             method: "POST" } as RouteEntry,
+    confirmInitialPayment: { path: "/api/billing/confirm-initial-payment", method: "POST" } as RouteEntry,
   }
 } as const;
 
@@ -106,6 +107,7 @@ const timeouts: Record<string, number> = {
   "POST /api/billing/subscribe": 35_000,
   "GET /api/billing/subscriptions/:id": 20_000,
   "POST /api/billing/change-plan": 20_000,
+  "POST /api/billing/confirm-initial-payment": 20_000,
 };
 
 const retries: Record<string, number> = {
@@ -791,6 +793,29 @@ export async function changeBillingPlan(subscriptionId: string, newPriceId: stri
   } catch (e: any) {
     const er = toApiError(e);
     logBill("ERR", { reqId, op: "changePlan", status: er.status, message: er.message, friendly: er.friendly });
+    throw er;
+  }
+}
+
+/** Confirma pagamento inicial da fatura usando paymentMethod salvo (fallback SI) */
+export async function confirmInitialInvoicePayment(payload: {
+  subscriptionId: string;
+  paymentMethodId: string;
+}) {
+  const url = buildUrl(routes.billing.confirmInitialPayment);
+  const reqId = nextReqId("BILL");
+  logBill("REQ", { reqId, op: "confirmInitialPayment", url, payload: { ...payload, paymentMethodId: "pm_***" } });
+  try {
+    const out = await postJson<SubscriptionStatusResponse>(
+      url,
+      payload,
+      { timeoutMs: timeouts["POST /api/billing/confirm-initial-payment"], retries: 1 }
+    );
+    logBill("RES", { reqId, op: "confirmInitialPayment", status: out?.status });
+    return out;
+  } catch (e: any) {
+    const er = toApiError(e);
+    logBill("ERR", { reqId, op: "confirmInitialPayment", status: er.status, message: er.message, friendly: er.friendly });
     throw er;
   }
 }

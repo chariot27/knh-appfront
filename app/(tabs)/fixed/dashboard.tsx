@@ -1,30 +1,31 @@
-import { useRef, useState, useEffect, useCallback } from "react";
-import {
-  View,
-  Text,
-  TouchableWithoutFeedback,
-  StyleSheet,
-  Dimensions,
-  Animated,
-  Alert,
-  TouchableOpacity,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  Animated,
+  Dimensions,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-import PubsScreen, { type PubsScreenHandle, type Decision } from "../pubs/index";
 import type { VideoDTO } from "../gateway/api";
 import {
-  saveLastMatchedUserId,
   inviteMatchForTarget,
   isSubscriptionActiveCached,
+  saveLastMatchedUserId,
 } from "../gateway/api";
+import PubsScreen, { type Decision, type PubsScreenHandle } from "../pubs/index";
 
 import ContatosScreen from "../contatos";
-import AddVideoScreen from "../video";
 import ConvitesScreen from "../convites";
+import { isDevUnlock } from "../gateway/devUnlock";
 import PerfilScreen from "../perfil";
+import AddVideoScreen from "../video";
 
 const { width } = Dimensions.get("window");
 
@@ -49,12 +50,6 @@ function displayName(pub: VideoDTO): string {
   return uid ? `user-${uid.slice(0, 8)}` : "sem-nome";
 }
 
-function logHighlight(label: string) {
-  console.log(`%c${label}`, "color:#00f2ea; font-weight:700");
-  console.log("\x1b[36m%s\x1b[0m", label);
-}
-
-// UI de bloqueio
 function BlockedPage() {
   return (
     <View style={s.blockedWrap}>
@@ -74,13 +69,23 @@ function BlockedPage() {
 export default function Dashboard() {
   const [tab, setTab] = useState<Tab>("pubs");
   const [subActive, setSubActive] = useState<boolean>(false);
-  const pubsRef = useRef<PubsScreenHandle>(null);
+  const [devUnlock, setDevUnlockState] = useState<boolean>(false);
 
+  const pubsRef = useRef<PubsScreenHandle>(null);
   const scaleNope = useRef(new Animated.Value(1)).current;
   const scaleLike = useRef(new Animated.Value(1)).current;
 
+  // Pode usar botões e TAMBÉM ver abas se tiver assinatura ou DEV
+  const canMatch = subActive || devUnlock;
+  const canUseTabs = subActive || devUnlock;
+
   const refreshGate = useCallback(async () => {
-    setSubActive(await isSubscriptionActiveCached());
+    const [sub, dev] = await Promise.all([
+      isSubscriptionActiveCached(),
+      isDevUnlock(),
+    ]);
+    setSubActive(sub);
+    setDevUnlockState(dev);
   }, []);
 
   useEffect(() => { refreshGate(); }, [refreshGate]);
@@ -97,21 +102,18 @@ export default function Dashboard() {
   }
 
   async function onMatch(decision: Decision) {
-    if (!subActive) return askToSubscribe();
+    if (!canMatch) return askToSubscribe();
     pubsRef.current?.decide(decision);
   }
 
   async function onDecision(pub: VideoDTO, decision: Decision) {
-    if (!subActive) return; // não dispara backend
+    if (!canMatch) return;
     if (decision === "like") {
       await saveLastMatchedUserId(pub.userId);
-      logHighlight(`[MATCH-CACHE] userId salvo: ${pub.userId}`);
       try {
         const res = await inviteMatchForTarget(pub.userId);
-        if (res.matched && res.matchId) {
-          logHighlight(`[MATCH] Mútuo! matchId=${res.matchId}`);
-        } else {
-          console.log("[MATCH] Convite enviado, aguardando aceite. inviteId=", res.invite?.id);
+        if (!res?.invite && !res?.matched) {
+          console.log("[MATCH] Sem resposta do backend.");
         }
       } catch (err: any) {
         console.warn("[MATCH] Falha ao enviar convite:", err?.message || err);
@@ -133,12 +135,12 @@ export default function Dashboard() {
           <View style={s.matchPanel} pointerEvents="box-none">
             <TouchableWithoutFeedback
               onPressIn={() => animatePress(scaleNope)}
-              onPressOut={() => (!subActive ? askToSubscribe() : onMatch("nope"))}
+              onPressOut={() => (!canMatch ? askToSubscribe() : onMatch("nope"))}
             >
               <Animated.View
                 style={[
                   s.actionBtn,
-                  subActive ? s.nope : s.nopeLocked,
+                  canMatch ? s.nope : s.nopeLocked,
                   { marginRight: BUTTON_GAP, transform: [{ scale: scaleNope }] },
                 ]}
               >
@@ -149,12 +151,12 @@ export default function Dashboard() {
 
             <TouchableWithoutFeedback
               onPressIn={() => animatePress(scaleLike)}
-              onPressOut={() => (!subActive ? askToSubscribe() : onMatch("like"))}
+              onPressOut={() => (!canMatch ? askToSubscribe() : onMatch("like"))}
             >
               <Animated.View
                 style={[
                   s.actionBtn,
-                  subActive ? s.like : s.likeLocked,
+                  canMatch ? s.like : s.likeLocked,
                   { transform: [{ scale: scaleLike }] },
                 ]}
               >
@@ -167,9 +169,10 @@ export default function Dashboard() {
       );
     }
 
-    if (tab === "contatos") return subActive ? <ContatosScreen /> : <BlockedPage />;
-    if (tab === "add")      return subActive ? <AddVideoScreen />  : <BlockedPage />;
-    if (tab === "novidades")return subActive ? <ConvitesScreen /> : <BlockedPage />;
+    // >>> AGORA as abas respeitam DEV unlock também
+    if (tab === "contatos") return canUseTabs ? <ContatosScreen /> : <BlockedPage />;
+    if (tab === "add")      return canUseTabs ? <AddVideoScreen />  : <BlockedPage />;
+    if (tab === "novidades")return canUseTabs ? <ConvitesScreen /> : <BlockedPage />;
     return <PerfilScreen />;
   }
 
@@ -226,7 +229,6 @@ const s = StyleSheet.create({
   body: { flex: 1 },
   contentFull: { flex: 1, backgroundColor: BG_SCREEN },
 
-  // Painel de decisão
   matchPanel: {
     position: "absolute",
     left: H_PADDING,
@@ -256,7 +258,6 @@ const s = StyleSheet.create({
   nopeLocked: { backgroundColor: "#3a3434" },
   likeLocked: { backgroundColor: "#2a3442" },
 
-  // Navbar (pill)
   navbarSafe: { backgroundColor: "transparent" },
   homeIndicator: {
     alignSelf: "center",
@@ -286,7 +287,6 @@ const s = StyleSheet.create({
   iconWrap: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
   iconWrapBig: { width: 46, height: 46, borderRadius: 23 },
 
-  // Bloqueio
   blockedWrap: {
     flex: 1,
     alignItems: "center",

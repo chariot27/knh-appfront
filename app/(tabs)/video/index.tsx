@@ -1,22 +1,24 @@
+// AddVideoScreen.tsx
+import { Feather } from "@expo/vector-icons";
+import { Audio, ResizeMode, Video } from "expo-av";
+import * as ImagePicker from "expo-image-picker";
+import { useFocusEffect } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  Alert,
-  TextInput,
   ActivityIndicator,
+  Alert,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import * as ImagePicker from "expo-image-picker";
-import { Feather } from "@expo/vector-icons";
-import { Video, ResizeMode, Audio } from "expo-av";
-import { router } from "expo-router";
 
-import { uploadVideo, isSubscriptionActiveCached } from "../gateway/api";
+import { isSubscriptionActiveCached, uploadVideo } from "../gateway/api";
+import { isDevUnlock } from "../gateway/devUnlock";
 
-function BlockedInline() {
+/* function BlockedInline() {
   return (
     <View style={b.wrap}>
       <Feather name="lock" size={24} color="#bbb" />
@@ -28,10 +30,11 @@ function BlockedInline() {
       </TouchableOpacity>
     </View>
   );
-}
+} */
 
 export default function AddVideoScreen() {
   const [allowed, setAllowed] = useState<boolean | null>(null);
+  const [dev, setDev] = useState(false);
 
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [picking, setPicking] = useState(false);
@@ -39,9 +42,19 @@ export default function AddVideoScreen() {
   const [uri, setUri] = useState<string | null>(null);
   const [caption, setCaption] = useState("");
 
-  useEffect(() => { (async () => setAllowed(await isSubscriptionActiveCached()))(); }, []);
+  const checkAllowed = useCallback(async () => {
+    const d = await isDevUnlock();
+    setDev(d);
+    if (d) {
+      setAllowed(true);
+      return;
+    }
+    setAllowed(await isSubscriptionActiveCached());
+  }, []);
 
-  // permissões + áudio
+  useEffect(() => { checkAllowed(); }, [checkAllowed]);
+  useFocusEffect(useCallback(() => { checkAllowed(); }, [checkAllowed]));
+
   useEffect(() => {
     (async () => {
       const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -106,10 +119,16 @@ export default function AddVideoScreen() {
   if (allowed === null) {
     return <View style={{flex:1,alignItems:"center",justifyContent:"center"}}><ActivityIndicator color="#7B61FF" /></View>;
   }
-  if (!allowed) return <BlockedInline />;
+  //if (!allowed) return <BlockedInline />;
 
   return (
     <SafeAreaView style={s.screen} edges={["top", "left", "right"]}>
+      {dev && (
+        <View style={s.devPill}>
+          <Text style={s.devPillTxt}>DESBLOQUEIO DEV ATIVO</Text>
+        </View>
+      )}
+
       <View style={s.header}>
         <Text style={s.title}>Adicionar vídeo</Text>
         {uri && (
@@ -205,6 +224,18 @@ const b = StyleSheet.create({
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#000", paddingHorizontal: 16 },
+  devPill: {
+    alignSelf: "flex-start",
+    marginTop: 8,
+    backgroundColor: "rgba(123,97,255,0.18)",
+    borderColor: "#7B61FF",
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  devPillTxt: { color: "#cfc4ff", fontWeight: "800", fontSize: 12 },
+
   header: {
     flexDirection: "row",
     alignItems: "center",
