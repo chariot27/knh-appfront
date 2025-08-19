@@ -48,7 +48,7 @@ export default function Login() {
         <Feather name="x" size={28} color="#fff" />
       </TouchableOpacity>
 
-      <Image source={require("../../../assets/images/logo.png")} style={styles.logo} resizeMode="contain" />
+      
 
       <TextInput
         placeholder="Email" placeholderTextColor="#777" autoCapitalize="none" autoComplete="email"
