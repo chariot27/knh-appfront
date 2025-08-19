@@ -18,8 +18,11 @@ import {
   View,
 } from "react-native";
 import {
-  InviteDTO, InviteStatus, acceptInvite,
-  getUserIdFromToken, initCurrentUserFromToken,
+  InviteDTO,
+  InviteStatus,
+  acceptInvite,
+  getUserIdFromToken,
+  initCurrentUserFromToken,
   isSubscriptionActiveCached,
   listInvitesReceived,
 } from "../gateway/api";
@@ -44,29 +47,28 @@ type ConviteItem = {
 const norm = (t: string) =>
   t.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase().trim();
 
-/* function BlockedInline() {
-  return (
-    <View style={b.wrap}>
-      <Feather name="lock" size={24} color="#bbb" />
-      <Text style={b.title}>Recurso Premium</Text>
-      <Text style={b.msg}>Assine o Premium para ver seus convites.</Text>
-      <TouchableOpacity style={b.btn} onPress={() => router.push("/assinatura")}>
-        <Feather name="zap" size={16} color="#fff" />
-        <Text style={b.btnText}>Assinar Premium</Text>
-      </TouchableOpacity>
-    </View>
-  );
-} */
-
 export default function ConvitesScreen() {
   const [allowed, setAllowed] = useState<boolean | null>(null);
   const [dev, setDev] = useState(false);
   const [data, setData] = useState<ConviteItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
+  // controla loading por item para evitar duplo clique
+  const [busyIds, setBusyIds] = useState<Set<string>>(new Set());
 
   const toast = (m: string) =>
-    Platform.OS === "android" ? ToastAndroid.show(m, ToastAndroid.SHORT) : Alert.alert(m);
+    Platform.OS === "android"
+      ? ToastAndroid.show(m, ToastAndroid.SHORT)
+      : Alert.alert(m);
+
+  const setBusy = useCallback((id: string, busy: boolean) => {
+    setBusyIds((prev) => {
+      const next = new Set(prev);
+      if (busy) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
 
   const checkAllowed = useCallback(async () => {
     const d = await isDevUnlock();
@@ -78,8 +80,15 @@ export default function ConvitesScreen() {
     setAllowed(await isSubscriptionActiveCached());
   }, []);
 
-  useEffect(() => { checkAllowed(); }, [checkAllowed]);
-  useFocusEffect(useCallback(() => { checkAllowed(); }, [checkAllowed]));
+  useEffect(() => {
+    checkAllowed();
+  }, [checkAllowed]);
+
+  useFocusEffect(
+    useCallback(() => {
+      checkAllowed();
+    }, [checkAllowed])
+  );
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -92,7 +101,10 @@ export default function ConvitesScreen() {
       }
       if (!meId) throw new Error("Usuário não autenticado.");
 
-      const rows: InviteDTO[] = await listInvitesReceived(meId, "PENDING" as InviteStatus);
+      const rows: InviteDTO[] = await listInvitesReceived(
+        meId,
+        "PENDING" as InviteStatus
+      );
 
       const items: ConviteItem[] = rows.map((inv) => ({
         id: inv.id,
@@ -100,7 +112,7 @@ export default function ConvitesScreen() {
         targetId: inv.targetId,
         name: inv.inviterName || `Usuário ${inv.inviterId.slice(0, 6)}`,
         avatarUrl:
-          (inv.inviterAvatar && inv.inviterAvatar.length > 3)
+          inv.inviterAvatar && inv.inviterAvatar.length > 3
             ? inv.inviterAvatar
             : `https://i.pravatar.cc/200?u=${encodeURIComponent(inv.inviterId)}`,
         message: "Curtiu seu pub e quer conectar",
@@ -115,23 +127,55 @@ export default function ConvitesScreen() {
     }
   }, []);
 
-  useEffect(() => { if (allowed) load(); }, [allowed, load]);
-  const onRefresh = useCallback(() => { if (allowed) load(); }, [allowed, load]);
+  useEffect(() => {
+    if (allowed) load();
+  }, [allowed, load]);
 
-  const onAccept = useCallback(async (inviteId: string) => {
-    try {
-      await acceptInvite(inviteId);
+  const onRefresh = useCallback(() => {
+    if (allowed) load();
+  }, [allowed, load]);
+
+  const isAlreadyMatchedError = (msg: string | undefined) =>
+    !!msg &&
+    /(unique|uq_pair|duplicate|conflict|already|pair[_\s-]*order|chk_pair_order)/i.test(
+      msg
+    );
+
+  const onAccept = useCallback(
+    async (inviteId: string) => {
+      if (busyIds.has(inviteId)) return; // trava toques múltiplos
+      setBusy(inviteId, true);
+      try {
+        await acceptInvite(inviteId);
+        setData((prev) => prev.filter((c) => c.id !== inviteId));
+        toast("Match confirmado ✔");
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        // se o backend já garantiu o match numa tentativa anterior/corrida,
+        // tratamos como idempotente e removemos o item também
+        if (isAlreadyMatchedError(msg)) {
+          setData((prev) => prev.filter((c) => c.id !== inviteId));
+          toast("Match confirmado ✔");
+        } else {
+          toast(`Falha ao aceitar: ${msg || "erro"}`);
+        }
+      } finally {
+        setBusy(inviteId, false);
+      }
+    },
+    [busyIds, setBusy]
+  );
+
+  const onDecline = useCallback(
+    (inviteId: string) => {
+      if (busyIds.has(inviteId)) return;
+      setBusy(inviteId, true);
       setData((prev) => prev.filter((c) => c.id !== inviteId));
-      toast("Match confirmado ✔");
-    } catch (e: any) {
-      toast(`Falha ao aceitar: ${e?.message || "erro"}`);
-    }
-  }, []);
-
-  const onDecline = useCallback((inviteId: string) => {
-    setData((prev) => prev.filter((c) => c.id !== inviteId));
-    toast("Convite removido");
-  }, []);
+      toast("Convite removido");
+      setBusy(inviteId, false);
+    },
+    [busyIds, setBusy]
+  );
 
   const filtered = useMemo(() => {
     if (!query) return data;
@@ -139,9 +183,13 @@ export default function ConvitesScreen() {
   }, [data, query]);
 
   if (allowed === null) {
-    return <View style={{flex:1,alignItems:"center",justifyContent:"center"}}><ActivityIndicator color="#7B61FF" /></View>;
+    return (
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+        <ActivityIndicator color="#7B61FF" />
+      </View>
+    );
   }
-  //if (!allowed) return <BlockedInline />;
+  // if (!allowed) return <BlockedInline />;
 
   return (
     <View style={s.screen}>
@@ -153,32 +201,58 @@ export default function ConvitesScreen() {
 
       <FlatList
         data={filtered}
-        keyExtractor={(it: any) => it.id}
-        renderItem={({ item }) => (
-          <View style={s.card}>
-            <View style={s.row}>
-              <Image source={{ uri: item.avatarUrl }} style={s.avatar} />
-              <View style={s.info}>
-                <Text numberOfLines={1} style={s.name}>{item.name}</Text>
-                {!!item.message && <Text numberOfLines={2} style={s.msg}>{item.message}</Text>}
+        keyExtractor={(it: ConviteItem) => it.id}
+        renderItem={({ item }) => {
+          const busy = busyIds.has(item.id);
+          return (
+            <View style={s.card}>
+              <View style={s.row}>
+                <Image source={{ uri: item.avatarUrl }} style={s.avatar} />
+                <View style={s.info}>
+                  <Text numberOfLines={1} style={s.name}>
+                    {item.name}
+                  </Text>
+                  {!!item.message && (
+                    <Text numberOfLines={2} style={s.msg}>
+                      {item.message}
+                    </Text>
+                  )}
+                </View>
+              </View>
+
+              <View style={s.actions}>
+                <TouchableOpacity
+                  style={[s.btn, s.btnGhost, busy && s.btnDisabled]}
+                  onPress={() => onDecline(item.id)}
+                  disabled={busy || refreshing}
+                >
+                  <Feather name="x" size={16} color="#ff6b6b" />
+                  <Text style={[s.btnGhostText, { color: "#ff6b6b" }]}>
+                    Recusar
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[s.btn, s.btnPrimary, busy && s.btnDisabled]}
+                  onPress={() => onAccept(item.id)}
+                  disabled={busy || refreshing}
+                  activeOpacity={busy ? 1 : 0.7}
+                >
+                  {busy ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <>
+                      <Feather name="check" size={16} color="#fff" />
+                      <Text style={s.btnPrimaryText}>Aceitar</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </View>
             </View>
-
-            <View style={s.actions}>
-              <TouchableOpacity style={[s.btn, s.btnGhost]} onPress={() => onDecline(item.id)}>
-                <Feather name="x" size={16} color="#ff6b6b" />
-                <Text style={[s.btnGhostText, { color: "#ff6b6b" }]}>Recusar</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[s.btn, s.btnPrimary]} onPress={() => onAccept(item.id)}>
-                <Feather name="check" size={16} color="#fff" />
-                <Text style={s.btnPrimaryText}>Aceitar</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
+          );
+        }}
         contentContainerStyle={{ padding: GUTTER, paddingBottom: BOTTOM_INSET }}
-        ListHeaderComponent={(
+        ListHeaderComponent={
           <View style={s.headerWrap}>
             <View style={s.topbar}>
               <Text style={s.title}>Convites</Text>
@@ -214,7 +288,7 @@ export default function ConvitesScreen() {
               )}
             </View>
           </View>
-        )}
+        }
         ListEmptyComponent={
           <View style={s.empty}>
             <Feather name="inbox" size={20} color="#666" />
@@ -223,7 +297,13 @@ export default function ConvitesScreen() {
             </Text>
           </View>
         }
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#7B61FF" />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor="#7B61FF"
+          />
+        }
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       />
@@ -232,11 +312,26 @@ export default function ConvitesScreen() {
 }
 
 const b = StyleSheet.create({
-  wrap: { flex:1, alignItems:"center", justifyContent:"center", paddingHorizontal:24, gap:8, backgroundColor:"#000" },
-  title: { color:"#fff", fontSize:18, fontWeight:"800" },
-  msg: { color:"#bdbdbd", fontSize:13, textAlign:"center" },
-  btn: { backgroundColor:"#6f63ff", borderRadius:12, paddingHorizontal:16, paddingVertical:10, flexDirection:"row", gap:6, alignItems:"center" },
-  btnText: { color:"#fff", fontWeight:"800" },
+  wrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+    gap: 8,
+    backgroundColor: "#000",
+  },
+  title: { color: "#fff", fontSize: 18, fontWeight: "800" },
+  msg: { color: "#bdbdbd", fontSize: 13, textAlign: "center" },
+  btn: {
+    backgroundColor: "#6f63ff",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    flexDirection: "row",
+    gap: 6,
+    alignItems: "center",
+  },
+  btnText: { color: "#fff", fontWeight: "800" },
 });
 
 const s = StyleSheet.create({
@@ -295,7 +390,13 @@ const s = StyleSheet.create({
     marginTop: 12,
   },
   row: { flexDirection: "row", alignItems: "center", gap: 12 },
-  avatar: { width: 56, height: 56, borderRadius: 28, borderWidth: 2, borderColor: "#111" },
+  avatar: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    borderWidth: 2,
+    borderColor: "#111",
+  },
   info: { flex: 1, gap: 2 },
   name: { color: "#fff", fontSize: 15, fontWeight: "800" },
   msg: { color: "#bdbdbd", fontSize: 12 },
@@ -310,11 +411,26 @@ const s = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
-  btnGhost: { backgroundColor: "rgba(255,255,255,0.06)", borderWidth: 1, borderColor: "#1a1a1a" },
+  btnGhost: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "#1a1a1a",
+  },
   btnGhostText: { fontSize: 14, fontWeight: "800" },
-  btnPrimary: { backgroundColor: "#6f63ff", borderWidth: 1, borderColor: "#6f63ff" },
+  btnPrimary: {
+    backgroundColor: "#6f63ff",
+    borderWidth: 1,
+    borderColor: "#6f63ff",
+  },
   btnPrimaryText: { color: "#fff", fontSize: 14, fontWeight: "800" },
 
-  empty: { alignItems: "center", justifyContent: "center", paddingVertical: 32, gap: 8 },
+  btnDisabled: { opacity: 0.5 },
+
+  empty: {
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 32,
+    gap: 8,
+  },
   emptyTxt: { color: "#888", fontSize: 13 },
 });
