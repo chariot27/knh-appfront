@@ -4,7 +4,7 @@
     "slug": "emu",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/vnh-icon.png",
+    "icon": "./assets/images/marca.png",
     "scheme": "vnh",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
@@ -13,7 +13,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/vnh-icon.png",
+        "foregroundImage": "./assets/images/marca.png",
         "backgroundColor": "#000000"
       },
       "edgeToEdgeEnabled": true,
@@ -22,7 +22,7 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/vnh-icon.png",
+      "favicon": "./assets/images/marca.png",
       "backgroundColor": "#000000",
       "themeColor": "#000000"
     },
@@ -31,7 +31,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/vnh-icon.png",
+          "image": "./assets/images/marca.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#000000",
