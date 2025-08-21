@@ -5,22 +5,35 @@ import { Picker } from "@react-native-picker/picker";
 import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator, Alert,
-  Image, Platform,
+  ActivityIndicator,
+  Alert,
+  Image,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput, TouchableOpacity,
-  View
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { getCurrentUser, getPerfilByEmail } from "../gateway/api";
 import { clearDevUnlock, isDevUnlock, setDevUnlock } from "../gateway/devUnlock";
 
-const DEFAULT_AVATAR_URL =
-  "https://cdn-icons-png.flaticon.com/512/149/149071.png";
-
+const DEFAULT_AVATAR_URL = "https://cdn-icons-png.flaticon.com/512/149/149071.png";
 const LOGIN_ROUTE = "/(tabs)/fixed/login";
+
+// ===== Paleta unificada com telas anteriores =====
+const BG = "#0B0B10";
+const CARD = "#151519";
+const INPUT = "#1C1D22";
+const BORDER = "#2A2B34";
+const TEXT = "#FFFFFF";
+const SUBTEXT = "#B7BAC8";
+const PLACEHOLDER = "#9AA0AE";
+const PURPLE = "#9333EA";
+const PURPLE_DIM = "#7E22CE";
+const PURPLE_SOFT = "#A78BFA";
 
 export default function Perfil() {
   const [locked, setLocked] = useState(true);
@@ -139,147 +152,266 @@ export default function Perfil() {
 
   if (loading) {
     return (
-      <SafeAreaView style={s.container}>
+      <SafeAreaView style={styles.container}>
         <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-          <ActivityIndicator size="large" color="#00f2ea" />
-          <Text style={{ color: "#bbb", marginTop: 12 }}>Carregando perfil...</Text>
+          <ActivityIndicator size="large" color={PURPLE} />
+          <Text style={{ color: SUBTEXT, marginTop: 12 }}>Carregando perfil...</Text>
         </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={s.container}>
-      <ScrollView>
-        {/* Cabeçalho */}
-        <View style={s.header}>
-          <Text style={s.title}>Perfil do Usuário</Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
-            <TouchableOpacity onPress={refreshPerfil} style={s.iconBtn}>
-              <Ionicons name="refresh" size={20} color="#fff" />
+    <SafeAreaView style={styles.container}>
+      <ScrollView contentContainerStyle={styles.scroll}>
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.title}>Perfil</Text>
+          <View style={styles.headerActions}>
+            <TouchableOpacity onPress={refreshPerfil} style={styles.iconBtn}>
+              <Ionicons name="refresh" size={18} color="#fff" />
             </TouchableOpacity>
-            <TouchableOpacity onPress={toggleLock} style={s.iconBtn}>
-              <Ionicons name={locked ? "lock-closed" : "lock-open"} size={20} color="#fff" />
+            <TouchableOpacity onPress={toggleLock} style={styles.iconBtn}>
+              <Ionicons name={locked ? "lock-closed" : "lock-open"} size={18} color="#fff" />
             </TouchableOpacity>
-            <TouchableOpacity onPress={confirmLogout} style={[s.iconBtn, s.logoutBtn]}>
-              <Ionicons name="exit-outline" size={20} color="#fff" />
+            <TouchableOpacity onPress={confirmLogout} style={[styles.iconBtn, styles.logoutBtn]}>
+              <Ionicons name="exit-outline" size={18} color="#fff" />
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* Foto e nome */}
-        <View style={s.profileSection}>
-          <Image
-            source={avatarError ? { uri: DEFAULT_AVATAR_URL } : displayAvatar}
-            style={s.avatar}
-            onError={() => setAvatarError(true)}
-          />
-          <View>
-            <Text style={s.name}>{nome || "—"}</Text>
-            <Text style={s.type}>{(tipo || "—").toString()}</Text>
-            {!!email && <Text style={s.email}>{email}</Text>}
-          </View>
-        </View>
-
-        {/* Biografia */}
-        <Text style={s.label}>Biografia</Text>
-        <TextInput
-          style={[s.input, { minHeight: 80, textAlignVertical: "top" }]}
-          value={bio ?? ""}
-          editable={!locked}
-          placeholder="Fale um pouco sobre você"
-          placeholderTextColor="#888"
-          onChangeText={setBio}
-          multiline
-        />
-
-        {/* Filtro de feed */}
-        <Text style={s.label}>Em breve</Text>
-        <View style={s.pickerWrapper}>
-          <Picker
-            selectedValue={feedFilter}
-            enabled={!locked}
-            onValueChange={(value) => setFeedFilter(value)}
-            dropdownIconColor="#fff"
-            style={s.picker}
-            mode={Platform.OS === "android" ? "dropdown" : undefined}
-          >
-            <Picker.Item label="Em breve" value="Em breve" color={itemColor} />
-          </Picker>
-        </View>
-
-        {/* DEV Unlock abaixo do "Em breve" */}
-        <Text style={[s.label, { marginTop: 6 }]}>Desbloqueio (DEV)</Text>
-        <TextInput
-          style={s.input}
-          value={unlockText}
-          onChangeText={onChangeUnlock}
-          placeholder='Digite "TESTE" para liberar'
-          placeholderTextColor="#888"
-          autoCapitalize="characters"
-        />
-        {devUnlocked && (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 }}>
-            <View style={s.devPill}>
-              <Text style={s.devPillTxt}>DESBLOQUEIO ATIVO</Text>
+        {/* Card: avatar + identidade */}
+        <View style={styles.card}>
+          <View style={styles.identityRow}>
+            <View style={styles.avatarRing}>
+              <Image
+                source={avatarError ? { uri: DEFAULT_AVATAR_URL } : displayAvatar}
+                style={styles.avatar}
+                onError={() => setAvatarError(true)}
+              />
             </View>
-            <TouchableOpacity onPress={disableUnlock} style={s.devPillBtn}>
-              <Text style={s.devPillBtnTxt}>Desativar</Text>
-            </TouchableOpacity>
-          </View>
-        )}
 
+            <View style={{ flex: 1 }}>
+              <Text style={styles.name}>{nome || "—"}</Text>
+              <Text style={styles.type}>{(tipo || "—").toString()}</Text>
+              {!!email && <Text style={styles.email}>{email}</Text>}
+            </View>
+          </View>
+
+          {/* Tags (pills) */}
+          {Array.isArray(tags) && tags.length > 0 && (
+            <>
+              <Text style={styles.sectionSub}>Áreas</Text>
+              <View style={styles.tagsWrap}>
+                {tags.map((t, i) => (
+                  <View key={`${t}-${i}`} style={styles.tagPill}>
+                    <Text style={styles.tagText}>{t}</Text>
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
+        </View>
+
+        {/* Card: Biografia */}
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Biografia</Text>
+          <TextInput
+            style={[styles.input, styles.inputMultiline]}
+            value={bio ?? ""}
+            editable={!locked}
+            placeholder="Fale um pouco sobre você"
+            placeholderTextColor={PLACEHOLDER}
+            onChangeText={setBio}
+            multiline
+          />
+        </View>
+
+        {/* Card: Preferências (em breve / filtro) */}
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Preferências</Text>
+          <Text style={styles.label}>Em breve</Text>
+          <View style={styles.pickerWrapper}>
+            <Picker
+              selectedValue={feedFilter}
+              enabled={!locked}
+              onValueChange={(value) => setFeedFilter(value)}
+              dropdownIconColor="#fff"
+              style={styles.picker}
+              mode={Platform.OS === "android" ? "dropdown" : undefined}
+            >
+              <Picker.Item label="Em breve" value="Em breve" color={itemColor} />
+            </Picker>
+          </View>
+        </View>
+
+        {/* Card: DEV Unlock */}
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Desenvolvedor</Text>
+          <Text style={styles.label}>Desbloqueio (DEV)</Text>
+          <TextInput
+            style={styles.input}
+            value={unlockText}
+            onChangeText={onChangeUnlock}
+            placeholder='Digite "TESTE" para liberar'
+            placeholderTextColor={PLACEHOLDER}
+            autoCapitalize="characters"
+          />
+          {devUnlocked && (
+            <View style={styles.devRow}>
+              <View style={styles.devPill}>
+                <Text style={styles.devPillTxt}>DESBLOQUEIO ATIVO</Text>
+              </View>
+              <TouchableOpacity onPress={disableUnlock} style={styles.devPillBtn}>
+                <Text style={styles.devPillBtnTxt}>Desativar</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+
+        {/* CTA */}
         <TouchableOpacity
-          style={[s.button, s.subscribeButton]}
+          style={[styles.button, styles.subscribeButton]}
           onPress={() => router.push("/assinatura")}
         >
-          <Text style={s.buttonText}>Assinar Streaming</Text>
+          <Text style={styles.buttonText}>Assinar Streaming</Text>
         </TouchableOpacity>
 
-        <View style={{ height: 24 }} />
+        <View style={{ height: 20 }} />
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#121212", padding: 16 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 },
-  title: { fontSize: 20, fontWeight: "bold", color: "#fff" },
-  iconBtn: { backgroundColor: "#2a2a2a", padding: 8, borderRadius: 8 },
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: BG },
+  scroll: { padding: 16, gap: 12 },
 
-  profileSection: { flexDirection: "row", alignItems: "center", marginBottom: 20 },
-  avatar: { width: 70, height: 70, borderRadius: 35, backgroundColor: "#2a2a2a", marginRight: 16, borderWidth: 1, borderColor: "#333" },
-  name: { fontSize: 18, fontWeight: "bold", color: "#fff" },
-  type: { fontSize: 14, color: "#ccc" },
-  email: { fontSize: 12, color: "#aaa", marginTop: 2 },
+  // Header
+  header: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 6,
+    paddingHorizontal: 4,
+  },
+  title: { fontSize: 20, fontWeight: "800", color: TEXT },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 10 },
+  iconBtn: {
+    backgroundColor: "#20212A",
+    padding: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  logoutBtn: { backgroundColor: "#B00020", borderColor: "#A21D2B" },
 
-  label: { color: "#aaa", marginTop: 10, marginBottom: 4 },
-  input: { backgroundColor: "#1e1e1e", color: "#fff", borderRadius: 8, padding: 10, borderWidth: 1, borderColor: "#2a2a2a" },
+  // Card base
+  card: {
+    backgroundColor: CARD,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: BORDER,
+    padding: 14,
+    gap: 10,
+  },
 
-  pickerWrapper: { backgroundColor: "#1e1e1e", borderRadius: 8, marginBottom: 10, borderWidth: 1, borderColor: "#2a2a2a" },
-  picker: { color: "#fff", height: 56, width: "100%" },
+  // Identidade
+  identityRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  avatarRing: {
+    width: 84,
+    height: 84,
+    borderRadius: 22,
+    backgroundColor: "#111218",
+    borderWidth: 2,
+    borderColor: PURPLE_SOFT, // aro roxo suave
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatar: {
+    width: 76,
+    height: 76,
+    borderRadius: 18,
+    backgroundColor: "#191A22",
+  },
+  name: { fontSize: 18, fontWeight: "800", color: TEXT },
+  type: { fontSize: 13, color: SUBTEXT, marginTop: 2 },
+  email: { fontSize: 12, color: SUBTEXT, marginTop: 2 },
 
-  button: { backgroundColor: "#444", padding: 12, borderRadius: 8, alignItems: "center", marginTop: 10 },
-  subscribeButton: { backgroundColor: "#0066ff" },
-  buttonText: { color: "#fff", fontWeight: "bold" },
-  logoutBtn: { backgroundColor: "#b00020" },
-
-  devPill: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 10,
+  // Tags
+  sectionSub: { color: SUBTEXT, fontSize: 12, fontWeight: "800", marginTop: 2 },
+  tagsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  tagPill: {
+    paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: "rgba(123,97,255,0.15)",
+    backgroundColor: "#12131A",
     borderWidth: 1,
-    borderColor: "#7B61FF",
+    borderColor: BORDER,
   },
-  devPillTxt: { color: "#cfc4ff", fontWeight: "800", fontSize: 12 },
+  tagText: { color: TEXT, fontSize: 12.5, fontWeight: "700" },
+
+  // Seções
+  sectionTitle: { color: TEXT, fontSize: 14, fontWeight: "800", marginBottom: 2 },
+  label: { color: SUBTEXT, fontSize: 12, marginBottom: 6 },
+
+  // Inputs
+  input: {
+    backgroundColor: INPUT,
+    color: TEXT,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: BORDER,
+    fontSize: 14.5,
+  },
+  inputMultiline: { minHeight: 96, textAlignVertical: "top" },
+
+  // Picker
+  pickerWrapper: {
+    backgroundColor: INPUT,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    overflow: "hidden",
+  },
+  picker: { color: TEXT, height: 50, width: "100%" },
+
+  // DEV pills
+  devRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 8 },
+  devPill: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "rgba(147, 51, 234, 0.18)",
+    borderWidth: 1,
+    borderColor: PURPLE,
+  },
+  devPillTxt: { color: "#E9DAFF", fontWeight: "800", fontSize: 12 },
   devPillBtn: {
-    backgroundColor: "#7B61FF",
+    backgroundColor: PURPLE,
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
   },
   devPillBtnTxt: { color: "#fff", fontWeight: "800", fontSize: 12 },
+
+  // CTA
+  button: {
+    height: 48,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: PURPLE,
+    marginTop: 6,
+    shadowColor: PURPLE,
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  subscribeButton: { },
+  buttonText: { color: "#fff", fontWeight: "800", fontSize: 15.5, letterSpacing: 0.3 },
 });

@@ -1,57 +1,63 @@
 // app/(tabs)/fixed/RegisterScreen.tsx
-import React, { useMemo, useState } from "react";
-import {
-  View,
-  TextInput,
-  StyleSheet,
-  TouchableOpacity,
-  Text,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  Alert,
-  Image,
-  ActivityIndicator,
-  Pressable,
-} from "react-native";
-import { router } from "expo-router";
-import { LinearGradient } from "expo-linear-gradient";
 import { Picker } from "@react-native-picker/picker";
 import * as ImagePicker from "expo-image-picker";
+import { router } from "expo-router";
+import React, { useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
 
 import { registerUser, type UploadFile } from "../gateway/api";
 
-// Tags sugeridas (curadas)
-const SUGGESTED_TAGS = [
-  "Software",
-  "Recursos Humanos",
-  "Design",
-  "Hardware",
-  "Consultoria",
-  "Profissional",
-  "Networking",
+// ======= Paleta/UI compacta =======
+const BG = "#0B0B10";
+const CARD = "#151519";
+const INPUT = "#1C1D22";
+const BORDER = "#2A2B34";
+const PLACEHOLDER = "#9AA0AE";
+const TEXT = "#FFFFFF";
+const SUBTEXT = "#B7BAC8";
+
+const PURPLE = "#9333EA";      // principal
+const PURPLE_DIM = "#7E22CE";  // contorno
+const PURPLE_SOFT = "#A78BFA"; // texto de apoio
+
+// Tags fixas (sem customização)
+const FIXED_TAGS = [
+  "tecnologia",
+  "recursos humanos",
+  "consultoria",
+  "aprendizado",
+  "ensino",
+  "empreender",
+  "contratar",
 ] as const;
 
-// util: "João da Silva" -> "joao" (backend usará <primeiroNome><uuid>.webp)
+// util: "João da Silva" -> "joao"
 function firstNameSlug(s: string) {
   const first = (s || "").trim().split(/\s+/)[0] || "avatar";
   const noAccents = first.normalize("NFD").replace(/\p{Diacritic}/gu, "");
   return noAccents.replace(/[^a-zA-Z0-9-_]+/g, "_").toLowerCase();
 }
-
 function extFromMime(mime?: string) {
   switch (mime) {
-    case "image/png":
-      return "png";
-    case "image/webp":
-      return "webp";
+    case "image/png": return "png";
+    case "image/webp": return "webp";
     case "image/jpeg":
-    case "image/jpg":
-      return "jpg";
-    case "image/gif":
-      return "gif";
-    default:
-      return "jpg";
+    case "image/jpg": return "jpg";
+    case "image/gif": return "gif";
+    default: return "jpg";
   }
 }
 
@@ -63,11 +69,8 @@ export default function RegisterScreen() {
   const [tipo, setTipo] = useState<"PROFISSIONAL" | "CONSULTOR">("PROFISSIONAL");
   const [bio, setBio] = useState("");
 
-  // Tags
+  // Tags escolhidas
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [customTag, setCustomTag] = useState("");
-  const [manualTagsOpen, setManualTagsOpen] = useState(false);
-  const [tagsRaw, setTagsRaw] = useState("");
 
   // Avatar
   const [avatarPreviewUri, setAvatarPreviewUri] = useState<string | null>(null);
@@ -89,29 +92,12 @@ export default function RegisterScreen() {
     }
   }
 
-  function addCustomTag() {
-    const tag = customTag.trim();
-    if (!tag) return;
-    const exists = selectedSet.has(tag.toLowerCase());
-    if (exists) {
-      setCustomTag("");
-      return;
-    }
-    if (selectedTags.length >= 10) {
-      Alert.alert("Limite de tags", "Você pode escolher até 10 tags.");
-      return;
-    }
-    setSelectedTags((prev) => [...prev, tag]);
-    setCustomTag("");
-  }
-
   async function escolherImagem() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
       Alert.alert("Permissão negada", "É necessário permitir acesso à galeria.");
       return;
     }
-
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsEditing: true,
@@ -119,15 +105,12 @@ export default function RegisterScreen() {
       quality: 0.9,
       base64: false,
     });
-
     if (result.canceled || !result.assets?.length) return;
 
     const asset = result.assets[0];
     const uri = asset.uri;
     const mime = asset.mimeType ?? "image/jpeg";
     const ext = extFromMime(mime);
-
-    // nome temporário para enviar (o servidor renomeia/força .webp)
     const name = `upload.${ext}`;
 
     setAvatarPreviewUri(uri);
@@ -135,39 +118,26 @@ export default function RegisterScreen() {
   }
 
   function buildPayload() {
-    const manual = tagsRaw
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-
-    const all = Array.from(new Set([...selectedTags, ...manual].map((t) => t.trim())));
-
     const onlyDigitsPhone = telefone.replace(/\D+/g, "");
-
-    // backend usa o NOME para formar <primeiroNome><uuid>.webp
-    // enviamos avatarUrl só como sugestão/compat (ex.: "max")
     const desiredBaseName = firstNameSlug(nome || (email.split("@")[0] || "avatar"));
-
     return {
       nome,
       email,
       telefone: onlyDigitsPhone,
       senha,
-      tipo,             // "PROFISSIONAL" | "CONSULTOR"
+      tipo,
       bio: bio || undefined,
-      tags: all.length ? all : undefined,
+      tags: selectedTags.length ? selectedTags : undefined,
       avatarUrl: desiredBaseName,
     };
   }
 
   async function onSubmit() {
     const payload = buildPayload();
-
     if (!payload.nome || !payload.email || !payload.senha || !payload.telefone) {
       Alert.alert("Campos obrigatórios", "Preencha nome, email, telefone e senha.");
       return;
     }
-
     const toLog = { ...payload, _hasFile: !!avatarFile };
     console.log("➡️ RegisterScreen enviando:", JSON.stringify(toLog, null, 2));
 
@@ -176,17 +146,11 @@ export default function RegisterScreen() {
       const resp = await registerUser(payload, avatarFile || undefined);
       console.log("✅ RegisterScreen resposta:", resp);
 
-      // reset
-      setNome("");
-      setEmail("");
-      setTelefone("");
-      setSenha("");
-      setTipo("PROFISSIONAL");
-      setBio("");
-      setTagsRaw("");
+      // reset visual
+      setNome(""); setEmail(""); setTelefone(""); setSenha("");
+      setTipo("PROFISSIONAL"); setBio("");
       setSelectedTags([]);
-      setAvatarPreviewUri(null);
-      setAvatarFile(null);
+      setAvatarPreviewUri(null); setAvatarFile(null);
 
       Alert.alert("Sucesso", "Cadastro realizado com sucesso!");
       router.replace("/(tabs)/fixed/login");
@@ -198,33 +162,40 @@ export default function RegisterScreen() {
     }
   }
 
+  // Para caber à vista: avatar menor, espaçamentos reduzidos, campos compactos (44-48px),
+  // cabeçalho curto e sem ícones decorativos.
   return (
     <KeyboardAvoidingView
       behavior={Platform.select({ ios: "padding", android: undefined })}
       style={styles.flex}
     >
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.container}>
-          <Text style={styles.title}>Criar conta</Text>
+          <Text style={styles.headerTitle}>Criar conta</Text>
 
-          {/* Avatar */}
-          <TouchableOpacity onPress={escolherImagem} style={styles.avatarWrapper} disabled={submitting}>
-            <Image
-              source={{
-                uri: avatarPreviewUri || "https://cdn-icons-png.flaticon.com/512/847/847969.png",
-              }}
-              style={styles.avatar}
-            />
-            {!avatarPreviewUri && (
-              <View style={styles.plusOverlay}>
-                <Text style={styles.plusText}>+</Text>
-              </View>
-            )}
+          {/* Avatar compacto com borda tracejada */}
+          <TouchableOpacity onPress={escolherImagem} style={styles.avatarZone} disabled={submitting}>
+            <View style={[styles.avatarBox, !avatarPreviewUri && styles.avatarDashed]}>
+              {avatarPreviewUri ? (
+                <Image source={{ uri: avatarPreviewUri }} style={styles.avatarImg} />
+              ) : (
+                <Text style={styles.avatarText}>Upload</Text>
+              )}
+            </View>
+            <Text style={styles.avatarHint}>
+              {avatarPreviewUri ? "Trocar foto" : "Enviar foto de perfil"}
+            </Text>
           </TouchableOpacity>
 
+          {/* ===== Informações pessoais ===== */}
+          <Text style={styles.sectionHead}>Informações</Text>
+
           <TextInput
-            placeholder="Nome"
-            placeholderTextColor="#777"
+            placeholder="Nome completo"
+            placeholderTextColor={PLACEHOLDER}
             value={nome}
             onChangeText={setNome}
             style={styles.input}
@@ -232,7 +203,7 @@ export default function RegisterScreen() {
           />
           <TextInput
             placeholder="Email"
-            placeholderTextColor="#777"
+            placeholderTextColor={PLACEHOLDER}
             autoCapitalize="none"
             keyboardType="email-address"
             value={email}
@@ -241,29 +212,29 @@ export default function RegisterScreen() {
             editable={!submitting}
           />
           <TextInput
-            placeholder="Telefone"
-            placeholderTextColor="#777"
-            keyboardType="phone-pad"
-            value={telefone}
-            onChangeText={setTelefone}
-            style={styles.input}
-            editable={!submitting}
-          />
-          <TextInput
             placeholder="Senha"
-            placeholderTextColor="#777"
+            placeholderTextColor={PLACEHOLDER}
             secureTextEntry
             value={senha}
             onChangeText={setSenha}
             style={styles.input}
             editable={!submitting}
           />
+          <TextInput
+            placeholder="Telefone"
+            placeholderTextColor={PLACEHOLDER}
+            keyboardType="phone-pad"
+            value={telefone}
+            onChangeText={setTelefone}
+            style={styles.input}
+            editable={!submitting}
+          />
 
-          <View style={styles.pickerWrapper}>
+          <View style={styles.pickerRow}>
             <Picker
               selectedValue={tipo}
               onValueChange={(v) => setTipo(v)}
-              dropdownIconColor="#000"
+              dropdownIconColor={TEXT}
               style={styles.picker}
               enabled={!submitting}
             >
@@ -274,21 +245,21 @@ export default function RegisterScreen() {
 
           <TextInput
             placeholder="Bio (opcional)"
-            placeholderTextColor="#777"
+            placeholderTextColor={PLACEHOLDER}
             value={bio}
             onChangeText={setBio}
             style={[styles.input, styles.inputMultiline]}
             multiline
-            numberOfLines={4}
+            numberOfLines={3}
             editable={!submitting}
           />
 
-          {/* === TAGS === */}
+          {/* ===== Tags fixas ===== */}
           <View style={styles.tagsCard}>
-            <Text style={styles.sectionTitle}>Escolha suas áreas</Text>
+            <Text style={styles.subHead}>Áreas de interesse</Text>
 
-            <View className="chipsWrap" style={styles.chipsWrap}>
-              {SUGGESTED_TAGS.map((tag) => {
+            <View style={styles.chipsWrap}>
+              {FIXED_TAGS.map((tag) => {
                 const active = selectedSet.has(tag.toLowerCase());
                 return (
                   <Pressable
@@ -300,117 +271,31 @@ export default function RegisterScreen() {
                       pressed && styles.chipPressed,
                     ]}
                   >
-                    {active ? (
-                      <LinearGradient
-                        colors={["#00f2ea", "#ff0050"]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.chipGradient}
-                      >
-                        <Text style={styles.chipTextActive}>{tag}</Text>
-                      </LinearGradient>
-                    ) : (
-                      <Text style={styles.chipTextIdle}>{tag}</Text>
-                    )}
+                    <Text style={active ? styles.chipTextActive : styles.chipTextIdle}>
+                      {tag}
+                    </Text>
                   </Pressable>
                 );
               })}
             </View>
-
-            {/* Adicionar tag personalizada */}
-            <View style={styles.customRow}>
-              <TextInput
-                placeholder="Adicionar tag personalizada"
-                placeholderTextColor="#888"
-                value={customTag}
-                onChangeText={setCustomTag}
-                style={styles.customInput}
-                editable={!submitting}
-                onSubmitEditing={addCustomTag}
-                returnKeyType="done"
-              />
-              <TouchableOpacity
-                onPress={addCustomTag}
-                disabled={!customTag.trim()}
-                activeOpacity={0.85}
-                style={[styles.addBtnWrap, !customTag.trim() && { opacity: 0.6 }]}
-              >
-                <LinearGradient
-                  colors={["#00f2ea", "#ff0050"]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.addBtn}
-                >
-                  <Text style={styles.addBtnText}>+</Text>
-                </LinearGradient>
-              </TouchableOpacity>
-            </View>
-
-            {/* Lista de tags escolhidas */}
-            {selectedTags.length > 0 && (
-              <>
-                <Text style={styles.selectedTitle}>Selecionadas</Text>
-                <View style={styles.selectedWrap}>
-                  {selectedTags.map((t) => (
-                    <View key={t} style={styles.selectedPill}>
-                      <Text style={styles.selectedText}>{t}</Text>
-                      <Pressable
-                        onPress={() => toggleTag(t)}
-                        style={({ pressed }) => [styles.removePill, pressed && { opacity: 0.7 }]}
-                        hitSlop={8}
-                      >
-                        <Text style={styles.removePillText}>×</Text>
-                      </Pressable>
-                    </View>
-                  ))}
-                </View>
-              </>
-            )}
-
-            {/* Alternar input manual */}
-            <Pressable
-              onPress={() => setManualTagsOpen((v) => !v)}
-              style={({ pressed }) => [styles.manualToggle, pressed && { opacity: 0.8 }]}
-            >
-              <Text style={styles.manualToggleText}>
-                {manualTagsOpen ? "Ocultar entrada manual" : "Adicionar manualmente (opcional)"}
-              </Text>
-            </Pressable>
-
-            {manualTagsOpen && (
-              <TextInput
-                placeholder="Digite tags separadas por vírgula"
-                placeholderTextColor="#888"
-                value={tagsRaw}
-                onChangeText={setTagsRaw}
-                style={styles.manualInput}
-                editable={!submitting}
-              />
-            )}
           </View>
 
+          {/* Botão principal */}
           <TouchableOpacity
-            activeOpacity={0.85}
+            activeOpacity={0.9}
             onPress={onSubmit}
-            style={styles.buttonWrapper}
+            style={styles.button}
             disabled={submitting}
           >
-            <LinearGradient
-              colors={["#00f2ea", "#ff0050"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.button}
-            >
-              {submitting ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.buttonText}>Cadastrar</Text>
-              )}
-            </LinearGradient>
+            {submitting ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.buttonText}>Cadastrar</Text>
+            )}
           </TouchableOpacity>
 
-          <TouchableOpacity onPress={() => router.replace("/(tabs)/fixed/login")} style={{ marginTop: 8 }}>
-            <Text style={{ color: "#bbb" }}>Já tem conta? Entrar</Text>
+          <TouchableOpacity onPress={() => router.replace("/(tabs)/fixed/login")} style={{ marginTop: 6 }}>
+            <Text style={{ color: SUBTEXT, fontSize: 13 }}>Já tem conta? Entrar</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -419,160 +304,117 @@ export default function RegisterScreen() {
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1, backgroundColor: "#000" },
-  scroll: { flexGrow: 1, justifyContent: "center", paddingVertical: 40 },
-  container: { alignItems: "center", gap: 16, paddingHorizontal: 16 },
-  title: { color: "#fff", fontSize: 24, fontWeight: "700", marginBottom: 10 },
+  flex: { flex: 1, backgroundColor: BG },
+  // Densidade reduzida para "caber" em telas comuns sem rolagem longa
+  scroll: { flexGrow: 1, justifyContent: "center", paddingVertical: 12 },
+  container: { alignItems: "center", gap: 10, paddingHorizontal: 16 },
 
-  avatarWrapper: { position: "relative", width: 120, height: 120, marginBottom: 16 },
-  avatar: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    borderWidth: 2,
-    borderColor: "#ff0050",
-    backgroundColor: "#222",
-  },
-  plusOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    width: 120,
-    height: 120,
-    borderRadius: 60,
+  headerTitle: { color: TEXT, fontSize: 20, fontWeight: "800", marginBottom: 2 },
+
+  // Avatar menor e flat
+  avatarZone: { alignItems: "center", gap: 4, marginBottom: 6 },
+  avatarBox: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.4)",
+    backgroundColor: BG,
+    borderWidth: 2,
+    borderColor: PURPLE_SOFT,
   },
-  plusText: { color: "#fff", fontSize: 40, fontWeight: "700" },
+  avatarDashed: { borderStyle: "dashed" },
+  avatarImg: { width: 84, height: 84, borderRadius: 42 },
+  avatarText: { color: PURPLE_SOFT, fontSize: 12, fontWeight: "700" },
+  avatarHint: { color: PURPLE_SOFT, fontSize: 11 },
 
+  // Títulos de seção compactos
+  sectionHead: {
+    width: "92%",
+    color: TEXT,
+    fontSize: 13.5,
+    fontWeight: "800",
+    marginTop: 4,
+    marginBottom: 2,
+  },
+
+  // Inputs compactos (cabem melhor)
   input: {
     width: "92%",
-    minHeight: 50,
-    borderRadius: 16,
-    paddingHorizontal: 16,
+    height: 46,
+    borderRadius: 12,
+    paddingHorizontal: 12,
     borderWidth: 1,
-    borderColor: "#2a2a2a",
-    backgroundColor: "#0c0c0c",
-    color: "#fff",
-    fontSize: 16,
+    borderColor: BORDER,
+    backgroundColor: INPUT,
+    color: TEXT,
+    fontSize: 15,
   },
-  inputMultiline: { minHeight: 100, textAlignVertical: "top", paddingTop: 12 },
+  inputMultiline: { height: 80, textAlignVertical: "top", paddingTop: 10 },
 
-  pickerWrapper: {
+  // Picker com altura reduzida
+  pickerRow: {
     width: "92%",
     height: 50,
-    borderRadius: 16,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#2a2a2a",
-    backgroundColor: "#0c0c0c",
-    overflow: "hidden",
+    borderColor: BORDER,
+    backgroundColor: INPUT,
     justifyContent: "center",
   },
-  picker: { width: "100%", height: 50, color: "#fff" },
+  picker: { width: "100%", height: 50, color: TEXT },
 
-  // ===== TAGS =====
+  // Tags compactas
   tagsCard: {
     width: "92%",
-    backgroundColor: "#0c0c0c",
-    borderRadius: 20,
-    padding: 14,
+    backgroundColor: CARD,
+    borderRadius: 14,
+    padding: 10,
     borderWidth: 1,
-    borderColor: "#1a1a1a",
-    gap: 10,
+    borderColor: "#20212A",
+    gap: 8,
   },
-  sectionTitle: { color: "#fff", fontSize: 16, fontWeight: "700", marginBottom: 4 },
+  subHead: { color: TEXT, fontSize: 13, fontWeight: "800" },
+  chipsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
 
-  chipsWrap: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  chipBase: { borderRadius: 999, overflow: "hidden" },
-  chipIdle: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    backgroundColor: "#141414",
-    borderWidth: 1,
-    borderColor: "#262626",
+  chipBase: {
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
   },
-  chipActive: {},
-  chipGradient: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999 },
-  chipTextIdle: { color: "#bbb", fontSize: 14, fontWeight: "600" },
-  chipTextActive: { color: "#fff", fontSize: 14, fontWeight: "700" },
+  chipIdle: {
+    backgroundColor: "#12131A",
+    borderWidth: 1,
+    borderColor: "#262833",
+  },
+  chipActive: {
+    backgroundColor: PURPLE,
+    borderWidth: 1,
+    borderColor: PURPLE_DIM,
+    shadowColor: PURPLE,
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 3,
+  },
+  chipTextIdle: { color: SUBTEXT, fontSize: 13, fontWeight: "700" },
+  chipTextActive: { color: "#fff", fontSize: 13, fontWeight: "800" },
   chipPressed: { transform: [{ scale: 0.98 }] },
 
-  customRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 6 },
-  customInput: {
-    flex: 1,
-    height: 44,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: "#262626",
-    backgroundColor: "#111",
-    color: "#fff",
-    fontSize: 14,
-  },
-  addBtnWrap: { width: 44, height: 44, borderRadius: 12, overflow: "hidden" },
-  addBtn: { flex: 1, alignItems: "center", justifyContent: "center" },
-  addBtnText: { color: "#fff", fontSize: 22, fontWeight: "900", marginTop: -2 },
-
-  selectedTitle: { color: "#aaa", fontSize: 13, fontWeight: "700", marginTop: 4 },
-  selectedWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 4 },
-  selectedPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: "#141414",
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#262626",
-  },
-  selectedText: { color: "#fff", fontSize: 13, fontWeight: "600" },
-  removePill: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#2a2a2a",
-  },
-  removePillText: { color: "#fff", fontSize: 12, fontWeight: "800", lineHeight: 18 },
-
-  manualToggle: {
-    marginTop: 6,
-    alignSelf: "flex-start",
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: "#111",
-    borderWidth: 1,
-    borderColor: "#222",
-  },
-  manualToggleText: { color: "#bbb", fontSize: 12, fontWeight: "700" },
-  manualInput: {
-    marginTop: 8,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#262626",
-    backgroundColor: "#111",
-    color: "#fff",
-    fontSize: 14,
-    paddingHorizontal: 12,
-    height: 44,
-  },
-
-  buttonWrapper: {
-    width: "92%",
-    height: 50,
-    borderRadius: 28,
-    overflow: "hidden",
-    marginTop: 10,
-  },
+  // Botão principal enxuto
   button: {
-    flex: 1,
-    borderRadius: 28,
+    width: "92%",
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: PURPLE,
     alignItems: "center",
     justifyContent: "center",
+    marginTop: 6,
+    shadowColor: PURPLE,
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
   },
-  buttonText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  buttonText: { color: "#fff", fontSize: 15.5, fontWeight: "800", letterSpacing: 0.3 },
 });
