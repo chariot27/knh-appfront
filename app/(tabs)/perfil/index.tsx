@@ -168,12 +168,12 @@ export default function Perfil() {
         <View style={styles.header}>
           <Text style={styles.title}>Perfil</Text>
           <View style={styles.headerActions}>
-            <TouchableOpacity onPress={refreshPerfil} style={styles.iconBtn}>
+            {/* <TouchableOpacity onPress={refreshPerfil} style={styles.iconBtn}>
               <Ionicons name="refresh" size={18} color="#fff" />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={toggleLock} style={styles.iconBtn}>
+            </TouchableOpacity> */}
+            {/* <TouchableOpacity onPress={toggleLock} style={styles.iconBtn}>
               <Ionicons name={locked ? "lock-closed" : "lock-open"} size={18} color="#fff" />
-            </TouchableOpacity>
+            </TouchableOpacity> */}
             <TouchableOpacity onPress={confirmLogout} style={[styles.iconBtn, styles.logoutBtn]}>
               <Ionicons name="exit-outline" size={18} color="#fff" />
             </TouchableOpacity>
@@ -219,7 +219,7 @@ export default function Perfil() {
           <TextInput
             style={[styles.input, styles.inputMultiline]}
             value={bio ?? ""}
-            editable={!locked}
+            editable={locked}
             placeholder="Fale um pouco sobre você"
             placeholderTextColor={PLACEHOLDER}
             onChangeText={setBio}

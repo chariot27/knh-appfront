@@ -38,7 +38,8 @@ const NAVBAR_HEIGHT = 72;
 const H_PADDING = 16;
 const BUTTON_GAP = 14;
 const BUTTON_WIDTH = (width - H_PADDING * 2 - BUTTON_GAP) / 2;
-const BUTTON_HEIGHT = Math.max(44, Math.round(BUTTON_WIDTH * 0.38));
+// 🔽 altura menor
+const BUTTON_HEIGHT = Math.max(40, Math.round(BUTTON_WIDTH * 0.30));
 const MATCH_PANEL_BOTTOM = 22;
 
 type Tab = "pubs" | "contatos" | "add" | "novidades" | "perfil";
@@ -75,7 +76,6 @@ export default function Dashboard() {
   const scaleNope = useRef(new Animated.Value(1)).current;
   const scaleLike = useRef(new Animated.Value(1)).current;
 
-  // Pode usar botões e TAMBÉM ver abas se tiver assinatura ou DEV
   const canMatch = subActive || devUnlock;
   const canUseTabs = subActive || devUnlock;
 
@@ -144,7 +144,7 @@ export default function Dashboard() {
                   { marginRight: BUTTON_GAP, transform: [{ scale: scaleNope }] },
                 ]}
               >
-                <Feather name="thumbs-down" size={26} color="#fff" />
+                <Feather name="thumbs-down" size={24} color="#fff" />
                 <Text style={s.actionLabel}>Deslike</Text>
               </Animated.View>
             </TouchableWithoutFeedback>
@@ -160,7 +160,7 @@ export default function Dashboard() {
                   { transform: [{ scale: scaleLike }] },
                 ]}
               >
-                <Feather name="thumbs-up" size={26} color="#fff" />
+                <Feather name="thumbs-up" size={24} color="#fff" />
                 <Text style={s.actionLabel}>Match</Text>
               </Animated.View>
             </TouchableWithoutFeedback>
@@ -169,7 +169,6 @@ export default function Dashboard() {
       );
     }
 
-    // >>> AGORA as abas respeitam DEV unlock também
     if (tab === "contatos") return canUseTabs ? <ContatosScreen /> : <BlockedPage />;
     if (tab === "add")      return canUseTabs ? <AddVideoScreen />  : <BlockedPage />;
     if (tab === "novidades")return canUseTabs ? <ConvitesScreen /> : <BlockedPage />;
@@ -185,7 +184,6 @@ export default function Dashboard() {
     <View style={s.screen}>
       <View style={s.body}>{renderContent()}</View>
 
-      {/* Navbar fixa em estilo pill */}
       <SafeAreaView edges={["bottom"]} style={s.navbarSafe}>
         <View style={s.homeIndicator} />
         <View style={s.navbarShadowWrap}>
@@ -240,19 +238,23 @@ const s = StyleSheet.create({
   },
   actionBtn: {
     width: BUTTON_WIDTH,
-    height: BUTTON_HEIGHT,
-    borderRadius: 12,
+    height: BUTTON_HEIGHT,    // altura menor
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
-    gap: 8,
+    gap: 6,
     elevation: 6,
     shadowColor: "#000",
     shadowOpacity: 0.35,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
   },
-  actionLabel: { color: "#fff", fontSize: 15, fontWeight: "700" },
+  actionLabel: { 
+    color: "#fff",
+    fontSize: 13,            // fonte menor
+    fontWeight: "600",
+  },
   nope: { backgroundColor: "#ff4d4f" },
   like: { backgroundColor: "#2196f3" },
   nopeLocked: { backgroundColor: "#3a3434" },

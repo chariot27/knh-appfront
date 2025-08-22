@@ -1,37 +1,45 @@
-import React, { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import {
+  StripeProvider,
+  initPaymentSheet,
+  isPlatformPaySupported,
+  presentPaymentSheet,
+  retrieveSetupIntent,
+} from "@stripe/stripe-react-native";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
   Alert,
+  Linking,
+  Modal,
+  Platform,
   SafeAreaView,
+  ScrollView,
   Text,
   TouchableOpacity,
   View,
-  ActivityIndicator,
-  ScrollView,
-  Linking,
-  Platform,
 } from "react-native";
-import { StripeProvider, initPaymentSheet, presentPaymentSheet, retrieveSetupIntent } from "@stripe/stripe-react-native";
 import {
-  getUserIdFromToken,
+  confirmInitialInvoicePayment,
   getLastLoginEmail,
-  startStripeSubscription,
   getSubscriptionStatus,
-  pollSubscriptionUntilActive,
-  isSubscriptionActiveCached,
+  getUserIdFromToken,
   getUserSubscriptionId,
+  isSubscriptionActiveCached,
+  pollSubscriptionUntilActive,
   saveUserSubscriptionId,
   setLastKnownSubscription,
-  confirmInitialInvoicePayment, // << NOVO
-  type SubscriptionBackendStatus,
+  startStripeSubscription,
   type SubscribeResponse,
+  type SubscriptionBackendStatus,
 } from "../gateway/api";
 
-// === CONFIG ===
-const PRICE_ID = "price_1Rw5xXRXxX1XNxE59Gn5KzA3";
-const MERCHANT_NAME = "Sua Empresa";
-const MERCHANT_COUNTRY = "BR"; // usado dentro do Google Pay
+/** ======================= CONFIG ======================= */
+const PRICE_ID = process.env.EXPO_PUBLIC_STRIPE_PRICE_ID ?? "price_1Rw5xXRXxX1XNxE59Gn5KzA3";
+const MERCHANT_NAME = process.env.EXPO_PUBLIC_MERCHANT_NAME ?? "Ars";
+const MERCHANT_COUNTRY = process.env.EXPO_PUBLIC_MERCHANT_COUNTRY ?? "BR"; // Google Pay
+const PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_STRIPE_PK; // usado se movermos o Provider para cá
 
-/* ---------------- utils: retry com backoff + jitter ---------------- */
+/** ========== utils: retry com backoff + jitter + abort ========= */
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const randJitter = (ms: number) => {
   const delta = ms * 0.25;
@@ -53,15 +61,17 @@ function isRetryableError(e: any) {
     return true;
   return false;
 }
-async function withRetry<T>(
-  fn: () => Promise<T>,
+async function withRetryAbortable<T>(
+  fn: (signal?: AbortSignal) => Promise<T>,
   {
+    signal,
     retries = 3,
     baseDelayMs = 500,
     maxDelayMs = 3500,
     factor = 2,
     shouldRetry,
   }: {
+    signal?: AbortSignal;
     retries?: number;
     baseDelayMs?: number;
     maxDelayMs?: number;
@@ -70,9 +80,11 @@ async function withRetry<T>(
   } = {}
 ): Promise<T> {
   let attempt = 0;
+  // eslint-disable-next-line no-constant-condition
   while (true) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     try {
-      return await fn();
+      return await fn(signal);
     } catch (e) {
       const can = (shouldRetry ? shouldRetry(e, attempt) : isRetryableError(e)) && attempt < retries;
       if (!can) throw e;
@@ -83,33 +95,53 @@ async function withRetry<T>(
   }
 }
 
-/* ----------------------------- componente ----------------------------- */
+function useMountedRef() {
+  const mounted = useRef(true);
+  useEffect(() => () => {
+    mounted.current = false;
+  }, []);
+  return mounted;
+}
 
+/** ======================= TELA PRINCIPAL (somente visual ajustado p/ centralizar) ======================= */
 export default function AssinaturaScreen() {
+  const mounted = useMountedRef();
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<SubscriptionBackendStatus | "UNKNOWN">("UNKNOWN");
   const [subscriptionId, setSubscriptionId] = useState<string | null>(null);
+  const [platformPaySupported, setPlatformPaySupported] = useState<boolean | null>(null);
 
   const [flow, setFlow] = useState<null | { publishableKey: string; sub: SubscribeResponse }>(null);
 
   const busyRef = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
   const canManage = useMemo(() => status === "ACTIVE" || status === "TRIALING", [status]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const supported = await isPlatformPaySupported();
+        if (mounted.current) setPlatformPaySupported(!!supported);
+      } catch {
+        if (mounted.current) setPlatformPaySupported(null); // desconhecido
+      }
+    })();
+  }, [mounted]);
 
   const boot = useCallback(async () => {
     const cachedActive = await isSubscriptionActiveCached();
-    if (cachedActive) setStatus("ACTIVE");
+    if (cachedActive && mounted.current) setStatus("ACTIVE");
 
     const uid = getUserIdFromToken();
     if (!uid) return;
 
     const sid = await getUserSubscriptionId(uid);
     if (!sid) return;
+    if (mounted.current) setSubscriptionId(sid);
 
-    setSubscriptionId(sid);
-
-    // Mesmo com cache ativo, tente pegar o status real — sem "rebaixar" visual para INCOMPLETE
     try {
-      const st = await withRetry(() => getSubscriptionStatus(sid), { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 });
+      const st = await withRetryAbortable(() => getSubscriptionStatus(sid), { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 });
+      if (!mounted.current) return;
       if (st.status === "ACTIVE" || st.status === "TRIALING") {
         setStatus(st.status);
       } else {
@@ -118,23 +150,28 @@ export default function AssinaturaScreen() {
     } catch {
       /* silencioso */
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [mounted]);
 
   useEffect(() => {
     void boot();
+    return () => {
+      abortRef.current?.abort();
+    };
   }, [boot]);
 
   async function startFlowGooglePay() {
     if (busyRef.current) return;
     busyRef.current = true;
     setLoading(true);
+    const ctrl = new AbortController();
+    abortRef.current?.abort();
+    abortRef.current = ctrl;
+
     try {
       const uid = getUserIdFromToken();
       const email = await getLastLoginEmail();
 
-      // Backend cria assinatura DEFAULT_INCOMPLETE e retorna PI client_secret (ou SI fallback)
-      const sub = await withRetry(
+      const sub = await withRetryAbortable(
         () =>
           startStripeSubscription({
             userId: uid || undefined,
@@ -142,14 +179,17 @@ export default function AssinaturaScreen() {
             priceId: PRICE_ID,
             pmMode: "auto",
           }),
-        { retries: 3, baseDelayMs: 500, maxDelayMs: 3500, shouldRetry: (e) => isRetryableError(e) }
+        { retries: 3, baseDelayMs: 500, maxDelayMs: 3500, shouldRetry: (e) => isRetryableError(e), signal: ctrl.signal }
       );
+
+      if (!mounted.current) return;
 
       setSubscriptionId(sub.subscriptionId);
       if (uid) await saveUserSubscriptionId(uid, sub.subscriptionId);
 
       setFlow({ publishableKey: sub.publishableKey, sub });
     } catch (e: any) {
+      if (e?.name === "AbortError") return;
       const msg = e?.friendly || e?.message || "Não foi possível iniciar a assinatura.";
       Alert.alert("Erro", msg);
       busyRef.current = false;
@@ -158,7 +198,7 @@ export default function AssinaturaScreen() {
   }
 
   function handleRunnerDone(finalStatus?: SubscriptionBackendStatus) {
-    if (finalStatus) setStatus(finalStatus);
+    if (finalStatus && mounted.current) setStatus(finalStatus);
     setFlow(null);
     busyRef.current = false;
     setLoading(false);
@@ -171,7 +211,8 @@ export default function AssinaturaScreen() {
     }
     setLoading(true);
     try {
-      const st = await withRetry(() => getSubscriptionStatus(subscriptionId), { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 });
+      const st = await withRetryAbortable(() => getSubscriptionStatus(subscriptionId), { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 });
+      if (!mounted.current) return;
       if (st.status === "ACTIVE" || st.status === "TRIALING") {
         setStatus(st.status);
       } else {
@@ -179,113 +220,131 @@ export default function AssinaturaScreen() {
       }
       Alert.alert("Status", `Assinatura: ${st.status}`);
     } catch (e: any) {
-      Alert.alert("Erro", e?.friendly || e?.message || "Falha ao consultar status.");
+      if (e?.name !== "AbortError") Alert.alert("Erro", e?.friendly || e?.message || "Falha ao consultar status.");
     } finally {
       setLoading(false);
     }
   }
 
+  const label = canManage
+    ? "Gerir pagamento"
+    : Platform.OS === "android" && platformPaySupported
+      ? "Pay with Google Pay"
+      : "Subscribe";
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#0b0f14" }}>
-      <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
-        <View style={{ flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 20, paddingVertical: 24 }}>
-          <View style={{ width: "100%", maxWidth: 440, alignItems: "center" }}>
-            <Text style={{ color: "white", fontSize: 24, fontWeight: "800", textAlign: "center" }}>Plano Premium</Text>
-            <Text style={{ color: "#b6c2cf", fontSize: 16, marginTop: 8, textAlign: "center" }}>
-              Acesse todos os recursos avançados e suporte prioritário.
-            </Text>
+      <ScrollView
+        contentContainerStyle={{
+          flexGrow: 1,
+          paddingHorizontal: 20,
+          paddingVertical: 24,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {/* Header centralizado */}
+        <View style={{ width: "100%", maxWidth: 440, alignItems: "center", alignSelf: "center" }}>
+          <Text style={{ color: "#E5E7EB", fontSize: 12, marginBottom: 6, textAlign: "center" }}>Premium Plans</Text>
+          <Text style={{ color: "white", fontSize: 28, fontWeight: "800", textAlign: "center" }}>Upgrade Now</Text>
+          <Text style={{ color: "#b6c2cf", fontSize: 14, marginTop: 6, textAlign: "center" }}>
+            Get access to all premium features and unlock your full potential
+          </Text>
+        </View>
 
-            <View
-              style={{
-                backgroundColor: "#111827",
-                borderRadius: 16,
-                padding: 18,
-                width: "100%",
-                marginTop: 16,
-                borderWidth: 1,
-                borderColor: "#1f2937",
-              }}
-            >
-              <Text style={{ color: "white", fontSize: 20, fontWeight: "800", textAlign: "center" }}>R$ 49,90 / mês</Text>
-              <Text style={{ color: "#9CA3AF", marginTop: 6, textAlign: "center" }}>Cancele quando quiser. Sem fidelidade.</Text>
-              {subscriptionId ? (
-                <Text style={{ color: "#9CA3AF", marginTop: 8, textAlign: "center" }}>ID da assinatura: {subscriptionId}</Text>
-              ) : null}
-              <Text style={{ color: "#D1FAE5", marginTop: 8, textAlign: "center" }}>
-                Status: {status === "UNKNOWN" ? "—" : status}
-              </Text>
+        {/* Card: Pro Plan (borda violeta) centralizado */}
+        <View
+          style={{
+            borderWidth: 1,
+            borderColor: "#7c3aed",
+            borderRadius: 16,
+            padding: 16,
+            marginTop: 20,
+            width: "100%",
+            maxWidth: 440,
+            alignSelf: "center",
+          }}
+        >
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View>
+              <Text style={{ color: "white", fontSize: 18, fontWeight: "700" }}>Plano Starter</Text>
+              <Text style={{ color: "#9CA3AF", fontSize: 12 }}>Mensal</Text>
             </View>
-
-            {/* ÚNICO BOTÃO: Google Pay (via PaymentSheet) */}
-            <TouchableOpacity
-              onPress={startFlowGooglePay}
-              disabled={loading}
-              style={{
-                backgroundColor: loading ? "#374151" : "#22c55e",
-                paddingVertical: 14,
-                borderRadius: 12,
-                alignItems: "center",
-                width: "100%",
-                maxWidth: 440,
-                marginTop: 16,
-              }}
-            >
-              {loading ? (
-                <ActivityIndicator />
-              ) : (
-                <Text style={{ color: "white", fontSize: 16, fontWeight: "700" }}>
-                  {canManage ? "Gerir pagamento" : Platform.OS === "android" ? "Assinar com Google Pay" : "Assinar"}
-                </Text>
-              )}
-            </TouchableOpacity>
-
-            {/* Ver status */}
-            <TouchableOpacity
-              onPress={handleChecarStatus}
-              disabled={loading}
-              style={{
-                backgroundColor: "#111827",
-                paddingVertical: 12,
-                borderRadius: 12,
-                alignItems: "center",
-                borderWidth: 1,
-                borderColor: "#1f2937",
-                width: "100%",
-                maxWidth: 440,
-                marginTop: 12,
-              }}
-            >
-              <Text style={{ color: "white", fontSize: 15 }}>Checar status</Text>
-            </TouchableOpacity>
-
-            <Text style={{ color: "#6B7280", fontSize: 12, marginTop: 12, textAlign: "center" }}>
-              Dica: toques repetidos são consolidados para evitar erros de idempotência.
-            </Text>
+            <Text style={{ color: "#a78bfa", fontSize: 20, fontWeight: "800" }}>R$49,90</Text>
+          </View>
+          <View style={{ marginTop: 12 }}>
+            <Text style={{ color: "#9CA3AF" }}>✓ Publicações ilimitadas</Text>
+            <Text style={{ color: "#9CA3AF" }}>✓ Conexões ilimitadas</Text>
+            <Text style={{ color: "#9CA3AF" }}>✓ Convites ilimitados</Text>
           </View>
         </View>
+
+        {/* Botão centralizado */}
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityState={{ busy: loading, disabled: loading || (Platform.OS === "android" && platformPaySupported === false) }}
+          onPress={startFlowGooglePay}
+          disabled={loading || (Platform.OS === "android" && platformPaySupported === false)}
+          style={{
+            backgroundColor: "#374151",
+            paddingVertical: 14,
+            borderRadius: 12,
+            alignItems: "center",
+            justifyContent: "center",
+            marginTop: 24,
+            width: "100%",
+            maxWidth: 440,
+            alignSelf: "center",
+          }}
+        >
+          {loading ? (
+            <ActivityIndicator />
+          ) : (
+            <Text style={{ color: "#E5E7EB", fontSize: 15, fontWeight: "700", textAlign: "center" }}>
+              {Platform.OS === "android" && platformPaySupported ? "Pay with Google Pay" : "Continue"}
+            </Text>
+          )}
+        </TouchableOpacity>
+
+        {/* Termos no rodapé centralizados */}
+        <Text style={{ color: "#6B7280", fontSize: 12, marginTop: 12, textAlign: "center", alignSelf: "center", maxWidth: 440 }}>
+          By subscribing, you agree to our Terms of Service and Privacy Policy.
+        </Text>
+
+        {/* Debug opcional em DEV centralizado */}
+        {__DEV__ && (
+          <View style={{ marginTop: 10, alignItems: "center", alignSelf: "center", width: "100%", maxWidth: 440 }}>
+            {subscriptionId ? <Text style={{ color: "#9CA3AF", textAlign: "center" }}>ID da assinatura: {subscriptionId}</Text> : null}
+            <Text style={{ color: "#D1FAE5", marginTop: 4, textAlign: "center" }}>Status: {status === "UNKNOWN" ? "—" : status}</Text>
+          </View>
+        )}
       </ScrollView>
 
+      {/* Provider local: se você já tiver no App.tsx, remova este bloco e use o modal diretamente */}
       {flow && (
-        <StripeProvider publishableKey={flow.publishableKey}>
-          <PaymentSheetRunner sub={flow.sub} onDone={handleRunnerDone} />
+        <StripeProvider publishableKey={flow.publishableKey || PUBLISHABLE_KEY || ""}>
+          <PaymentSheetRunnerModal visible={!!flow} sub={flow.sub} onDone={handleRunnerDone} />
         </StripeProvider>
       )}
     </SafeAreaView>
   );
 }
 
-/** Runner: confirma PI/SI via PaymentSheet (ativa Google Pay no Android) */
-function PaymentSheetRunner({
+/** =================== MODAL: init/present PaymentSheet (lógica intacta) =================== */
+function PaymentSheetRunnerModal({
+  visible,
   sub,
   onDone,
 }: {
+  visible: boolean;
   sub: SubscribeResponse;
   onDone: (finalStatus?: SubscriptionBackendStatus) => void;
 }) {
   const ranRef = useRef(false);
+  const mounted = useMountedRef();
 
   useEffect(() => {
-    if (ranRef.current) return;
+    if (!visible || ranRef.current) return;
     ranRef.current = true;
 
     (async () => {
@@ -304,20 +363,18 @@ function PaymentSheetRunner({
         return;
       }
 
-      // >>> VALIDA o formato do segredo (PaymentSheet exige pi_... ou seti_/si_... com _secret_)
       const secret = sub.paymentIntentClientSecret ?? sub.setupIntentClientSecret ?? "";
-      const looksLikePI = /^pi_[^_]+_secret_.+/.test(secret);
-      const looksLikeSI = /^seti?_[^_]+_secret_.+/.test(secret);
+      const looksLikePI = /^pi_[A-Za-z0-9]+_secret_[A-Za-z0-9]+$/i.test(secret);
+      const looksLikeSI = /^(seti|si)_[A-Za-z0-9]+_secret_[A-Za-z0-9]+$/i.test(secret);
       if (!looksLikePI && !looksLikeSI) {
         Alert.alert("Pagamento", "Segredo de pagamento inválido recebido do servidor.");
         onDone();
         return;
       }
-      // <<< FIM VALIDAÇÃO
 
-      // 1) init PaymentSheet (com Google Pay ligado no Android + customer)
+      // 1) init PaymentSheet
       try {
-        await withRetry(
+        await withRetryAbortable(
           async () => {
             const initRes = await initPaymentSheet({
               merchantDisplayName: MERCHANT_NAME,
@@ -343,7 +400,7 @@ function PaymentSheetRunner({
 
       // 2) Apresenta a PaymentSheet
       try {
-        await withRetry(
+        await withRetryAbortable(
           async () => {
             const res = await presentPaymentSheet();
             if ((res as any)?.error) {
@@ -364,18 +421,13 @@ function PaymentSheetRunner({
         return;
       }
 
-      // >>> NOVO: se foi fluxo de SetupIntent, recuperar paymentMethod e pedir backend para pagar a fatura inicial
+      // 3) Se SetupIntent, tentar pagar fatura inicial
       if (!hasPI && hasSI) {
         try {
           const si = await retrieveSetupIntent(sub.setupIntentClientSecret!);
-          const pmId =
-            (si as any)?.paymentMethodId ||
-            (si as any)?.paymentMethod?.id ||
-            (si as any)?.paymentMethod ||
-            null;
-
+          const pmId = (si as any)?.paymentMethodId || (si as any)?.paymentMethod?.id || (si as any)?.paymentMethod || null;
           if (pmId) {
-            await withRetry(
+            await withRetryAbortable(
               () =>
                 confirmInitialInvoicePayment({
                   subscriptionId: sub.subscriptionId,
@@ -385,20 +437,15 @@ function PaymentSheetRunner({
             );
           }
         } catch {
-          // silencioso; o poll abaixo ainda pode chegar a ACTIVE via webhook
+          // silencioso; webhook + poll podem confirmar depois
         }
       }
-      // <<< FIM NOVO BLOCO
 
-      // 3) REFRESH/POLL até ACTIVE/TRIALING (antes e depois do webhook)
+      // 4) Refresh / Poll até ACTIVE/TRIALING
       try {
-        // tentativa rápida antes do poll
         try {
-          const stNow = await withRetry(
-            () => getSubscriptionStatus(sub.subscriptionId),
-            { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 }
-          );
-          if (stNow.status === "ACTIVE" || stNow.status === "TRIALING") {
+          const stNow = await withRetryAbortable(() => getSubscriptionStatus(sub.subscriptionId), { retries: 2, baseDelayMs: 400, maxDelayMs: 2000 });
+          if ((stNow.status === "ACTIVE" || stNow.status === "TRIALING") && mounted.current) {
             const uid = getUserIdFromToken();
             if (uid) {
               await setLastKnownSubscription({
@@ -414,7 +461,6 @@ function PaymentSheetRunner({
           }
         } catch {}
 
-        // poll normal
         const finalSt = await pollSubscriptionUntilActive(sub.subscriptionId, { intervalMs: 1500, maxMs: 60_000 });
 
         const uid = getUserIdFromToken();
@@ -434,26 +480,24 @@ function PaymentSheetRunner({
         onDone();
       }
     })();
-  }, [sub, onDone]);
+  }, [visible, sub, onDone, mounted]);
 
   return (
-    <View
-      pointerEvents="auto"
-      style={{
-        position: "absolute",
-        left: 0,
-        right: 0,
-        top: 0,
-        bottom: 0,
-        backgroundColor: "rgba(0,0,0,0.35)",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <ActivityIndicator />
-      <Text style={{ color: "white", marginTop: 8 }}>
-        {Platform.OS === "android" ? "Abrindo Google Pay…" : "Abrindo pagamento…"}
-      </Text>
-    </View>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={() => {}}>
+      <View
+        pointerEvents="auto"
+        style={{
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.35)",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <ActivityIndicator />
+        <Text style={{ color: "white", marginTop: 8 }}>
+          {Platform.OS === "android" ? "Abrindo Google Pay…" : "Abrindo pagamento…"}
+        </Text>
+      </View>
+    </Modal>
   );
 }
