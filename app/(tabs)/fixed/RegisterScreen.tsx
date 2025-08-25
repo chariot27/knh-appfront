@@ -32,6 +32,7 @@ const SUBTEXT = "#B7BAC8";
 const PURPLE = "#9333EA";      // principal
 const PURPLE_DIM = "#7E22CE";  // contorno
 const PURPLE_SOFT = "#A78BFA"; // texto de apoio
+const DANGER = "#EF4444";      // erro
 
 // Tags fixas (sem customização)
 const FIXED_TAGS = [
@@ -61,6 +62,16 @@ function extFromMime(mime?: string) {
   }
 }
 
+// validação simples
+function isEmail(v: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim());
+}
+function cleanDigits(v: string) {
+  return (v || "").replace(/\D+/g, "");
+}
+
+type FieldErrors = Partial<Record<"nome"|"email"|"telefone"|"senha", string>>;
+
 export default function RegisterScreen() {
   const [nome, setNome] = useState("");
   const [email, setEmail] = useState("");
@@ -77,6 +88,9 @@ export default function RegisterScreen() {
   const [avatarFile, setAvatarFile] = useState<UploadFile | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
+
+  // erros de campo
+  const [errors, setErrors] = useState<FieldErrors>({});
 
   const selectedSet = useMemo(
     () => new Set(selectedTags.map((t) => t.toLowerCase())),
@@ -118,7 +132,7 @@ export default function RegisterScreen() {
   }
 
   function buildPayload() {
-    const onlyDigitsPhone = telefone.replace(/\D+/g, "");
+    const onlyDigitsPhone = cleanDigits(telefone);
     const desiredBaseName = firstNameSlug(nome || (email.split("@")[0] || "avatar"));
     return {
       nome,
@@ -132,12 +146,41 @@ export default function RegisterScreen() {
     };
   }
 
+  function validateAll(): { ok: boolean; errs: FieldErrors } {
+    const errs: FieldErrors = {};
+    const nomeTrim = (nome || "").trim();
+    const emailTrim = (email || "").trim();
+    const senhaTrim = (senha || "").trim();
+    const phoneDigits = cleanDigits(telefone);
+
+    if (!nomeTrim) errs.nome = "Informe seu nome completo.";
+    if (!emailTrim) errs.email = "Informe seu email.";
+    else if (!isEmail(emailTrim)) errs.email = "Email inválido.";
+
+    if (!senhaTrim) errs.senha = "Informe uma senha.";
+    else if (senhaTrim.length < 6) errs.senha = "A senha deve ter ao menos 6 caracteres.";
+
+    if (!phoneDigits) errs.telefone = "Informe seu telefone.";
+    else if (phoneDigits.length < 10 || phoneDigits.length > 11)
+      errs.telefone = "Telefone deve ter 10–11 dígitos (DDD + número).";
+
+    // tipo já tem default; se quiser forçar seleção explícita, poderia validar aqui.
+
+    return { ok: Object.keys(errs).length === 0, errs };
+  }
+
   async function onSubmit() {
-    const payload = buildPayload();
-    if (!payload.nome || !payload.email || !payload.senha || !payload.telefone) {
-      Alert.alert("Campos obrigatórios", "Preencha nome, email, telefone e senha.");
+    // valida primeiro
+    const { ok, errs } = validateAll();
+    setErrors(errs);
+
+    if (!ok) {
+      const msg = Object.values(errs).join("\n• ");
+      Alert.alert("Revise os campos", `• ${msg}`);
       return;
     }
+
+    const payload = buildPayload();
     const toLog = { ...payload, _hasFile: !!avatarFile };
     console.log("➡️ RegisterScreen enviando:", JSON.stringify(toLog, null, 2));
 
@@ -151,6 +194,7 @@ export default function RegisterScreen() {
       setTipo("PROFISSIONAL"); setBio("");
       setSelectedTags([]);
       setAvatarPreviewUri(null); setAvatarFile(null);
+      setErrors({});
 
       Alert.alert("Sucesso", "Cadastro realizado com sucesso!");
       router.replace("/(tabs)/fixed/login");
@@ -197,38 +241,53 @@ export default function RegisterScreen() {
             placeholder="Nome completo"
             placeholderTextColor={PLACEHOLDER}
             value={nome}
-            onChangeText={setNome}
-            style={styles.input}
+            onChangeText={(v)=>{ setNome(v); if (errors.nome) setErrors(p=>({ ...p, nome: undefined })); }}
+            style={[styles.input, errors.nome && styles.inputError]}
             editable={!submitting}
           />
+          <Text style={[styles.helperText, errors.nome && styles.helperDanger]}>
+            {errors.nome ?? " "}
+          </Text>
+
           <TextInput
             placeholder="Email"
             placeholderTextColor={PLACEHOLDER}
             autoCapitalize="none"
             keyboardType="email-address"
             value={email}
-            onChangeText={setEmail}
-            style={styles.input}
+            onChangeText={(v)=>{ setEmail(v); if (errors.email) setErrors(p=>({ ...p, email: undefined })); }}
+            style={[styles.input, errors.email && styles.inputError]}
             editable={!submitting}
           />
+          <Text style={[styles.helperText, errors.email && styles.helperDanger]}>
+            {errors.email ?? " "}
+          </Text>
+
           <TextInput
             placeholder="Senha"
             placeholderTextColor={PLACEHOLDER}
             secureTextEntry
             value={senha}
-            onChangeText={setSenha}
-            style={styles.input}
+            onChangeText={(v)=>{ setSenha(v); if (errors.senha) setErrors(p=>({ ...p, senha: undefined })); }}
+            style={[styles.input, errors.senha && styles.inputError]}
             editable={!submitting}
           />
+          <Text style={[styles.helperText, errors.senha && styles.helperDanger]}>
+            {errors.senha ?? " "}
+          </Text>
+
           <TextInput
             placeholder="Telefone"
             placeholderTextColor={PLACEHOLDER}
             keyboardType="phone-pad"
             value={telefone}
-            onChangeText={setTelefone}
-            style={styles.input}
+            onChangeText={(v)=>{ setTelefone(v); if (errors.telefone) setErrors(p=>({ ...p, telefone: undefined })); }}
+            style={[styles.input, errors.telefone && styles.inputError]}
             editable={!submitting}
           />
+          <Text style={[styles.helperText, errors.telefone && styles.helperDanger]}>
+            {errors.telefone ?? " "}
+          </Text>
 
           <View style={styles.pickerRow}>
             <Picker
@@ -307,7 +366,7 @@ const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: BG },
   // Densidade reduzida para "caber" em telas comuns sem rolagem longa
   scroll: { flexGrow: 1, justifyContent: "center", paddingVertical: 12 },
-  container: { alignItems: "center", gap: 10, paddingHorizontal: 16 },
+  container: { alignItems: "center", gap: 4, paddingHorizontal: 16 },
 
   headerTitle: { color: TEXT, fontSize: 20, fontWeight: "800", marginBottom: 2 },
 
@@ -350,6 +409,20 @@ const styles = StyleSheet.create({
     color: TEXT,
     fontSize: 15,
   },
+  inputError: {
+    borderColor: DANGER,
+  },
+  helperText: {
+    width: "92%",
+    fontSize: 11,
+    color: "transparent", // reserva espaço
+    marginTop: 2,
+    marginBottom: 2,
+  },
+  helperDanger: {
+    color: DANGER,
+  },
+
   inputMultiline: { height: 80, textAlignVertical: "top", paddingTop: 10 },
 
   // Picker com altura reduzida
